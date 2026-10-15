@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ck14-run
-  cancel-in-progress: false
+  group: ck14.yml-${{ github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   run-bot:
