@@ -1,4 +1,4 @@
-name: ck39
+name: ck8
 
 # === CHẠY LIÊN TỤC, KHÔNG CÁCH KHOẢNG ===
 # Cron mỗi 6h làm trigger dự phòng; auto-restart ở cuối job sẽ trigger lại
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ck39-run
+  group: ck8-run
   cancel-in-progress: true
 
 jobs:
@@ -55,7 +55,7 @@ jobs:
             REMAIN=$(( END_TIME - $(date +%s) ))
             echo "=== [$(date '+%H:%M:%S')] Attempt #$ATTEMPT — $REMAIN s remaining ==="
             START=$(date +%s)
-            python3 ck39.py
+            python3 ck8.py
             EXIT=$?
             DUR=$(( $(date +%s) - START ))
             echo "=== [$(date '+%H:%M:%S')] Bot exited code=$EXIT after ${DUR}s ==="
@@ -79,7 +79,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshots-ck39
+          name: debug-screenshots-ck8
           path: /tmp/debug_*.png
           if-no-files-found: ignore
           retention-days: 7
@@ -90,5 +90,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           sleep 5
-          echo "Triggering next ck1 run..."
-          gh workflow run ck1.yml --ref "$GITHUB_REF" || echo "(restart failed)"
+          echo "Triggering next ck8 run..."
+          gh workflow run ck8.yml --ref "$GITHUB_REF" || echo "(restart failed)"
