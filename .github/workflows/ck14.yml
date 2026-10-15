@@ -3,7 +3,7 @@ name: ck14
 # === CHẠY LIÊN TỤC, KHÔNG CÁCH KHOẢNG ===
 # Cron mỗi 6h làm trigger dự phòng; auto-restart ở cuối job sẽ trigger lại
 # ngay lập tức khi bot chạy xong -> không có kẽ hở giữa 2 phiên.
-# Concurrency + cancel-in-progress: false -> phiên sau xếp hàng chờ, không chồng.
+# Concurrency + cancel-in-progress: true -> phiên sau xếp hàng chờ, không chồng.
 on:
   workflow_dispatch:
 
