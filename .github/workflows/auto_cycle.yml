@@ -3,6 +3,8 @@ name: auto_cycle
 # === CHẾ ĐỘ CHẠY ===
 # - workflow_dispatch: trigger thủ công từ tab Actions
 # - schedule (cron mỗi 6h): tự động chạy lúc 00:00, 06:00, 12:00, 18:00 UTC
+# Cookie được đọc từ file `ck1.txt` trong repo (không cần secret FB_COOKIE).
+# Target name + ID vẫn đọc từ secrets (TARGET_NAME, TARGET_ID).
 # Concurrency + cancel-in-progress: true → nếu run mới trigger khi run cũ chưa xong,
 # run cũ sẽ bị cancel để tránh chồng (chống account bị flag bot).
 on:
@@ -58,23 +60,26 @@ jobs:
           pip install playwright
           playwright install chromium --with-deps
 
-      - name: Write cookie file from secret
-        env:
-          FB_COOKIE: ${{ secrets.FB_COOKIE }}
+      - name: Verify cookie file is present
         run: |
-          if [ -z "$FB_COOKIE" ]; then
-            echo "::error::Secret FB_COOKIE is not set. Go to Settings → Secrets and variables → Actions → New repository secret"
+          if [ ! -f ck1.txt ]; then
+            echo "::error::Cookie file ck1.txt not found in repo. Commit it (the repo is private)."
             exit 1
           fi
-          echo "$FB_COOKIE" > ck.txt
-          echo "Cookie file written ($(wc -c < ck.txt) bytes)"
-          # Verify by counting delimiters
-          COOKIE_COUNT=$(awk -F';' '{print NF}' ck.txt)
-          echo "Cookie entries: $COOKIE_COUNT"
+          COOKIE_SIZE=$(wc -c < ck1.txt)
+          COOKIE_ENTRIES=$(awk -F';' '{print NF}' ck1.txt)
+          echo "Cookie file: $COOKIE_SIZE bytes, $COOKIE_ENTRIES entries"
+          if [ "$COOKIE_SIZE" -lt 100 ]; then
+            echo "::error::Cookie file too small — likely empty or corrupt"
+            exit 1
+          fi
+          # Print redacted preview
+          head -c 30 ck1.txt
+          echo "...(redacted)"
 
       - name: Run auto_cycle.py
         env:
-          SINGLE_COOKIE_FILE: 'ck.txt'
+          SINGLE_COOKIE_FILE: 'ck1.txt'
           TARGET_NAME: ${{ secrets.TARGET_NAME }}
           TARGET_ID: ${{ secrets.TARGET_ID }}
           CYCLES: ${{ inputs.cycles || '5' }}
@@ -89,11 +94,11 @@ jobs:
         run: |
           set +e
           if [ -z "$TARGET_NAME" ]; then
-            echo "::error::Secret TARGET_NAME is not set"
+            echo "::error::Secret TARGET_NAME is not set. Go to Settings → Secrets → Actions → New repository secret"
             exit 1
           fi
           echo "=== Configuration ==="
-          echo "Cookie: ck.txt"
+          echo "Cookie file: $SINGLE_COOKIE_FILE (read from repo, not secret)"
           echo "Target: $TARGET_NAME (id=$TARGET_ID)"
           echo "Cycles: $CYCLES"
           echo "Claim range: [$CLAIM_MIN, $CLAIM_MAX]"

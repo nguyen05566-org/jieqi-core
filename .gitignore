@@ -1,9 +1,21 @@
-# Cookie files (NEVER commit these — they contain FB session tokens)
-ck.txt
-ck1.txt
+# Cookie files
+# Note: ck1.txt is the live cookie file used by GitHub Actions — DO commit it
+# (the repo is PRIVATE, so this is acceptable). Other ck*.txt files (ck2.txt, etc.)
+# are alternate accounts and can be added on demand.
 ck2.txt
-*.txt
+ck3.txt
+ck4.txt
+ck5.txt
+ck6.txt
+ck7.txt
+ck8.txt
+ck9.txt
+ck10.txt
+ck11.txt
+*.txt.bak
+*.txt.old
 !README.md
+!ck1.txt
 
 # Local state / fingerprint dirs
 state/
