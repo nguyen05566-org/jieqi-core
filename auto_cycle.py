@@ -230,6 +230,36 @@ JS_GET_VISIBLE_PROFILES = """() => {
     return out;
 }"""
 
+# === WS tap approach (faster than DOM clicking) ===
+# When we click a table, server sends PLAYER_ENTERED (cmd 0x019E) message via WS
+# containing player_ids of all players in that table. We tap WS messages and
+# search for target_id in the binary data — no DOM parsing needed.
+
+JS_INSTALL_WS_TAP = """() => {
+    if (window.__tap_installed) return true;
+    window.__tap = [];
+    window.__last_tap_count = 0;
+    const ws = window.connection && window.connection.ws;
+    if (!ws) return false;
+    const orig = ws.onmessage;
+    ws.binaryType = 'arraybuffer';
+    ws.onmessage = function(ev) {
+        let bytes = null;
+        try {
+            if (ev.data instanceof ArrayBuffer) bytes = Array.from(new Uint8Array(ev.data));
+            else if (ev.data && ev.data.data) bytes = Array.from(new Uint8Array(ev.data.data));
+        } catch(e) {}
+        if (bytes) window.__tap.push({ts: Date.now(), bytes});
+        if (orig) return orig.call(ws, ev);
+    };
+    window.__tap_installed = true;
+    return true;
+}"""
+
+JS_CLEAR_TAP = "() => { window.__tap = []; window.__last_tap_count = 0; return true; }"
+
+JS_GET_TAP = "() => window.__tap || []"
+
 # Scan ALL tables (id, bet, player_name) without name filter
 JS_SCAN_ALL_TABLES = """() => {
     const out = [];
@@ -501,33 +531,50 @@ def find_target_table(game_frame, target_name, bet_max):
 
 def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
     """Find a table where target_id is one of the players.
-    Click each table → popup shows showGameProfile(player_id) for both players.
-    Returns target table dict or None.
+    Uses WS tap approach (faster than DOM popup parsing):
+      1. Install WS message tap (if not installed yet)
+      2. For each table: clear tap, click table, check WS messages for target_id bytes
+      3. If found, return table dict
+
+    This works because when we click a table, server sends PLAYER_ENTERED (0x019E)
+    message containing player_ids of all players in that table. We search the
+    binary data for target_id (4-byte BE int32) — no DOM parsing needed.
     """
-    # First, scan all tables visible in lobby
+    import struct
+    target_be = struct.pack('>I', int(target_id))
+    target_bytes_list = list(target_be)
+
+    # Install WS tap (idempotent — if already installed, returns true)
+    game_frame.evaluate(JS_INSTALL_WS_TAP)
+
+    # Scan all tables visible in lobby
     tables = game_frame.evaluate(JS_SCAN_ALL_TABLES)
     if not tables:
         return None
 
-    log(f"  [scan-by-id] {len(tables)} tables visible — clicking each to find target_id={target_id}")
-    # Limit scan to max_tables_to_scan to avoid being too slow
+    log(f"  [scan-by-id] {len(tables)} tables visible — clicking each, checking WS for target_id={target_id}")
     tables_to_scan = tables[:max_tables_to_scan]
 
     found_table = None
     for t in tables_to_scan:
-        # Close any existing popup first
+        # Close any existing popup
         game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-        time.sleep(0.3)
+        time.sleep(0.2)
+        # Clear tap before click (so new messages are only from this click)
+        game_frame.evaluate(JS_CLEAR_TAP)
         # Click this table
         game_frame.evaluate(JS_CLICK_TABLE, t["id"])
-        time.sleep(1.2)
-        # Get visible profile links in popup
-        profiles = game_frame.evaluate(JS_GET_VISIBLE_PROFILES)
-        for p in profiles:
-            if p.get("player_id") == target_id:
-                found_table = t
-                log(f"  ✓✓✓ FOUND target_id={target_id} at table {t['id']} (player name: '{t['player']}', bet: {t['bet']})")
-                log(f"    profile text: {p.get('text')}")
+        time.sleep(1.0)  # wait for PLAYER_ENTERED to arrive
+        # Check tap messages for target_id
+        tap = game_frame.evaluate(JS_GET_TAP)
+        for msg in tap:
+            b = msg.get('bytes') or []
+            for off in range(len(b) - 3):
+                if b[off:off+4] == target_bytes_list:
+                    log(f"  ✓✓✓ FOUND target_id={target_id} at table {t['id']} (player: '{t['player']}', bet: {t['bet']})")
+                    found_table = t
+                    break
+            if found_table:
                 break
         if found_table:
             break
