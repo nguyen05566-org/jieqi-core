@@ -22,7 +22,7 @@ Why 50k-55k?
 Usage:
   python3 auto_cycle.py \\
       --cookie ck.txt \\
-      --target-name "nguyen" \\
+      --target-name "nguyen123456" \\
       --target-id 68639698 \\
       --cycles 3 \\
       --claim-min 50000 \\
@@ -30,7 +30,7 @@ Usage:
       --bet-max 100000
 
   Or via env vars:
-  SINGLE_COOKIE_FILE=ck.txt TARGET_NAME=nguyen TARGET_ID=68639698 \\
+  SINGLE_COOKIE_FILE=ck.txt TARGET_NAME=nguyen123456 TARGET_ID=68639698 \\
   CYCLES=3 python3 auto_cycle.py
 """
 import argparse
@@ -336,7 +336,7 @@ JS_SEND_SURRENDER = """() => new Promise((resolve) => {
             } catch(e) {}
             resolve(out);
         });
-        setTimeout(() => { if (!done) { done = true; resolve({ok: false, error: 'timeout 8s'}); } }, 8000);
+        setTimeout(() => { if (!done) { done = true; resolve({ok: false, error: 'timeout 12s'}); } }, 12000);
     } catch(e) { resolve({ok: false, error: e.toString()}); }
 })"""
 
@@ -559,10 +559,12 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
     for t in tables_to_scan:
         # Close any existing popup
         game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-        time.sleep(0.1)
+        time.sleep(0.2)
+        # Clear tap before click (so new messages are only from this click)
         game_frame.evaluate(JS_CLEAR_TAP)
+        # Click this table
         game_frame.evaluate(JS_CLICK_TABLE, t["id"])
-        time.sleep(0.3)  # wait for PLAYER_ENTERED to arrive
+        time.sleep(1.0)  # wait for PLAYER_ENTERED to arrive
         # Check tap messages for target_id
         tap = game_frame.evaluate(JS_GET_TAP)
         for msg in tap:
@@ -627,7 +629,7 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
 
         # Switch to "Còn trống" filter as alternative
         game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
-        time.sleep(1)
+        time.sleep(2)
         if use_id:
             target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
         else:
@@ -638,7 +640,7 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
         # Switch back to "Tất cả"
         game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
         # Wait + try again (every 10s)
-        wait = min(5, max(1, deadline - time.time()))
+        wait = min(10, max(2, deadline - time.time()))
         log(f"  [wait] attempt #{attempt} (mode={search_mode}): target not found — retry in {wait:.0f}s...")
         time.sleep(wait)
         # Re-open table browser (in case lobby state changed)
@@ -751,7 +753,7 @@ def main():
     parser = argparse.ArgumentParser(description="Gomoku auto-cycle: claim → surrender → claim → surrender ...")
     parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck.txt"),
                         help="Cookie file (default: ck.txt)")
-    parser.add_argument("--target-name", default=os.environ.get("TARGET_NAME", "nguyen"),
+    parser.add_argument("--target-name", default=os.environ.get("TARGET_NAME", "nguyen123456"),
                         help="Player name to find in tables (optional — if target_id is set, name is ignored)")
     parser.add_argument("--target-id", type=int, default=int(os.environ.get("TARGET_ID", "68639698")),
                         help="Player ID to find (preferred — unique, no name collision). Default: 0 (search by name)")
@@ -759,10 +761,10 @@ def main():
                         help="Max tables to scan when searching by ID (default: 30 — each table click takes ~1.5s)")
     parser.add_argument("--cycles", type=int, default=int(os.environ.get("CYCLES", "3")),
                         help="Number of claim→surrender cycles (default: 3)")
-    parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "40000")),
-                        help="Stop claiming when balance >= this (default: 40000)")
-    parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "45000")),
-                        help="Hard stop claiming when balance >= this (default: 45000)")
+    parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "50000")),
+                        help="Stop claiming when balance >= this (default: 50000)")
+    parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "55000")),
+                        help="Hard stop claiming when balance >= this (default: 55000)")
     parser.add_argument("--bet-max", type=int, default=int(os.environ.get("BET_MAX", "100000")),
                         help="Max bet to accept (default: 100000)")
     parser.add_argument("--min-balance", type=int, default=int(os.environ.get("MIN_BALANCE", "1000")),
@@ -812,9 +814,9 @@ def main():
 
         log(f"\n[setup] goto FB home → {GAME_URL}")
         page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(5000)
         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(8000)
+        page.wait_for_timeout(20000)
 
         game_frame = find_game_frame(page, max_wait=60)
         if not game_frame:
@@ -866,11 +868,11 @@ def main():
             if final_bal < args.claim_min and not server_rej:
                 log(f"\n[!] couldn't reach {args.claim_min:,} xu — claim exhausted")
                 log(f"    current balance: {final_bal:,}")
-                # Try surrender anyway if balance >= 40k
-                if final_bal >= 40000:
-                    log(f"    proceeding to surrender attempt anyway (>=40k)")
+                # Try surrender anyway if balance > bet_max/2
+                if final_bal >= args.bet_max // 4:
+                    log(f"    proceeding to surrender attempt anyway")
                 else:
-                    log(f"    [STOP] balance too low (<40k)")
+                    log(f"    [STOP] balance too low")
                     break
 
             # PHASE 2: SURRENDER
