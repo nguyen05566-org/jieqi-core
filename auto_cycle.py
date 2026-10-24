@@ -460,27 +460,53 @@ def find_target_table(game_frame, target_name, bet_max):
     return None
 
 
-def surrender_one_round(game_frame, page, target_name, bet_max):
+def wait_for_target_with_retry(game_frame, page, target_name, bet_max, max_wait_seconds=60):
+    """Open table browser + poll for target's table up to max_wait_seconds.
+    Returns target table dict or None if not found within the time budget."""
+    log(f"  [wait] polling for target '{target_name}' up to {max_wait_seconds}s...")
+    deadline = time.time() + max_wait_seconds
+    attempt = 0
+    # Open browser first with "Tất cả" filter
+    open_table_browser(game_frame, page, filter_name="Tất cả")
+    while time.time() < deadline:
+        attempt += 1
+        target = find_target_table(game_frame, target_name, bet_max)
+        if target:
+            return target
+        # Try "Còn trống" filter as fallback
+        game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
+        time.sleep(2)
+        target = find_target_table(game_frame, target_name, bet_max)
+        if target:
+            return target
+        # Switch back to "Tất cả"
+        game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
+        # Wait + try again (every 10s)
+        wait = min(10, max(2, deadline - time.time()))
+        log(f"  [wait] attempt #{attempt}: target not found — retry in {wait:.0f}s...")
+        time.sleep(wait)
+        # Re-open table browser (in case lobby state changed)
+        try:
+            s = game_frame.evaluate(JS_GET_STATE)
+            if s.get("path") != "Lobby":
+                ensure_in_lobby(game_frame, page)
+            open_table_browser(game_frame, page, filter_name="Tất cả")
+        except Exception as e:
+            log(f"  [wait] re-open lobby err: {e}")
+    return None
+
+
+def surrender_one_round(game_frame, page, target_name, bet_max, target_wait_seconds=60):
     """Find target table → join → SURRENDER. Returns (success, balance_lost)."""
     log("\n[SURRENDER] starting surrender round...")
     bal_before, _ = get_balance(game_frame)
     log(f"  balance before: {bal_before:,}")
 
-    # Step 1: open table browser with "Tất cả" filter
-    log("  [1] opening Chọn bàn + 'Tất cả' filter...")
-    open_table_browser(game_frame, page, filter_name="Tất cả")
-
-    # Step 2: find target table
-    log(f"  [2] scanning for target '{target_name}' with bet <= {bet_max}...")
-    target = find_target_table(game_frame, target_name, bet_max)
+    # Step 1+2: poll for target's table with retry (waits up to target_wait_seconds)
+    log(f"  [1+2] looking for target '{target_name}' (up to {target_wait_seconds}s)...")
+    target = wait_for_target_with_retry(game_frame, page, target_name, bet_max, max_wait_seconds=target_wait_seconds)
     if not target:
-        # Try "Còn trống" filter as fallback
-        log(f"    not found in 'Tất cả' — retrying with 'Còn trống' filter...")
-        game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
-        time.sleep(2)
-        target = find_target_table(game_frame, target_name, bet_max)
-    if not target:
-        log(f"    [!] target '{target_name}' not found in any table")
+        log(f"    [!] target '{target_name}' not found within {target_wait_seconds}s — skipping surrender")
         log(f"    [hint] make sure '{target_name}' has created a table with bet <= {bet_max} xu")
         return False, 0
 
@@ -581,6 +607,8 @@ def main():
                         help="Seconds between claims (default: 1.0)")
     parser.add_argument("--delay-between-cycles", type=float, default=float(os.environ.get("DELAY_BETWEEN_CYCLES", "10")),
                         help="Seconds between cycles (default: 10)")
+    parser.add_argument("--target-wait-seconds", type=int, default=int(os.environ.get("TARGET_WAIT_SECONDS", "60")),
+                        help="Seconds to wait for target's table to appear (default: 60)")
     parser.add_argument("--headless", default=os.environ.get("HEADLESS", "true").lower() == "true",
                         action="store_true", help="Run headless")
     args = parser.parse_args()
@@ -681,7 +709,7 @@ def main():
 
             # PHASE 2: SURRENDER
             log(f"\n=== Phase 2: SURRENDER to '{args.target_name}' (id={args.target_id}) ===")
-            ok, lost = surrender_one_round(game_frame, page, args.target_name, args.bet_max)
+            ok, lost = surrender_one_round(game_frame, page, args.target_name, args.bet_max, target_wait_seconds=args.target_wait_seconds)
             total_xu_to_target += lost
             cycle_results.append({
                 "cycle": cycle_num,

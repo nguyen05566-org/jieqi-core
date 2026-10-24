@@ -30,6 +30,11 @@ on:
         required: false
         default: '55000'
         type: string
+      target_wait_seconds:
+        description: 'Số giây chờ target tạo bàn trước khi bỏ cuộc (mỗi cycle)'
+        required: false
+        default: '60'
+        type: string
   schedule:
     # Chạy mỗi 6h (UTC): 00:00, 06:00, 12:00, 18:00
     # = 07:00, 13:00, 19:00, 01:00 giờ Việt Nam (UTC+7)
@@ -90,6 +95,7 @@ jobs:
           MAX_CLAIMS_PER_CYCLE: '200'
           CLAIM_COOLDOWN: '1.0'
           DELAY_BETWEEN_CYCLES: '10'
+          TARGET_WAIT_SECONDS: ${{ inputs.target_wait_seconds || '60' }}
           PYTHONUNBUFFERED: '1'
         run: |
           set +e
@@ -103,6 +109,7 @@ jobs:
           echo "Cycles: $CYCLES"
           echo "Claim range: [$CLAIM_MIN, $CLAIM_MAX]"
           echo "Bet max: $BET_MAX"
+          echo "Target wait: ${TARGET_WAIT_SECONDS}s per cycle"
           echo ""
           echo "=== Starting auto_cycle.py at $(date '+%H:%M:%S') ==="
           python3 auto_cycle.py
