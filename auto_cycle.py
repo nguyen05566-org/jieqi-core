@@ -336,7 +336,7 @@ JS_SEND_SURRENDER = """() => new Promise((resolve) => {
             } catch(e) {}
             resolve(out);
         });
-        setTimeout(() => { if (!done) { done = true; resolve({ok: false, error: 'timeout 12s'}); } }, 12000);
+        setTimeout(() => { if (!done) { done = true; resolve({ok: false, error: 'timeout 8s'}); } }, 8000);
     } catch(e) { resolve({ok: false, error: e.toString()}); }
 })"""
 
@@ -559,12 +559,10 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
     for t in tables_to_scan:
         # Close any existing popup
         game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-        time.sleep(0.2)
-        # Clear tap before click (so new messages are only from this click)
+        time.sleep(0.1)
         game_frame.evaluate(JS_CLEAR_TAP)
-        # Click this table
         game_frame.evaluate(JS_CLICK_TABLE, t["id"])
-        time.sleep(1.0)  # wait for PLAYER_ENTERED to arrive
+        time.sleep(0.3)  # wait for PLAYER_ENTERED to arrive
         # Check tap messages for target_id
         tap = game_frame.evaluate(JS_GET_TAP)
         for msg in tap:
@@ -629,7 +627,7 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
 
         # Switch to "Còn trống" filter as alternative
         game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
-        time.sleep(2)
+        time.sleep(1)
         if use_id:
             target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
         else:
@@ -640,7 +638,7 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
         # Switch back to "Tất cả"
         game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
         # Wait + try again (every 10s)
-        wait = min(10, max(2, deadline - time.time()))
+        wait = min(5, max(1, deadline - time.time()))
         log(f"  [wait] attempt #{attempt} (mode={search_mode}): target not found — retry in {wait:.0f}s...")
         time.sleep(wait)
         # Re-open table browser (in case lobby state changed)
@@ -814,9 +812,9 @@ def main():
 
         log(f"\n[setup] goto FB home → {GAME_URL}")
         page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(2000)
         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(20000)
+        page.wait_for_timeout(8000)
 
         game_frame = find_game_frame(page, max_wait=60)
         if not game_frame:
