@@ -208,6 +208,45 @@ JS_FIND_TABLE_BY_NAME = """(playerName) => {
     return matches;
 }"""
 
+# Close the table-info popup (after clicking a table to look at player IDs)
+JS_CLOSE_TABLE_POPUP = """() => {
+    const closeBtn = document.querySelector('.msgBox .closeButton');
+    if (closeBtn) { closeBtn.click(); return true; }
+    return false;
+}"""
+
+# Get all showGameProfile(playerId) elements currently visible in popups.
+# Returns array of {player_id, text} for each profile link.
+JS_GET_VISIBLE_PROFILES = """() => {
+    const out = [];
+    document.querySelectorAll('[onclick*=showGameProfile]').forEach(el => {
+        if (el.offsetParent === null) return;
+        const onclick = el.getAttribute('onclick') || '';
+        const m = onclick.match(/showGameProfile\\((\\d+)\\)/);
+        if (m) {
+            out.push({player_id: parseInt(m[1]), text: (el.textContent || '').trim().slice(0, 80)});
+        }
+    });
+    return out;
+}"""
+
+# Scan ALL tables (id, bet, player_name) without name filter
+JS_SCAN_ALL_TABLES = """() => {
+    const out = [];
+    document.querySelectorAll('div[id^=table_]').forEach(t => {
+        if (t.offsetParent === null) return;
+        const r = t.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return;
+        const text = (t.innerText || '').trim();
+        const parts = text.split('\\n');
+        const id = parseInt(t.id.replace('table_', ''));
+        if (isNaN(id)) return;
+        const cls = (t.className || '').toString();
+        out.push({id, bet: parts[0] || '', player: parts[1] || '', cls, has_exceed: cls.includes('exceed')});
+    });
+    return out;
+}"""
+
 JS_CLICK_TABLE = """(tableId) => {
     const div = document.getElementById('table_' + tableId);
     if (div && div.offsetParent !== null) { div.click(); return {clicked: true}; }
@@ -460,30 +499,102 @@ def find_target_table(game_frame, target_name, bet_max):
     return None
 
 
-def wait_for_target_with_retry(game_frame, page, target_name, bet_max, max_wait_seconds=60):
+def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
+    """Find a table where target_id is one of the players.
+    Click each table → popup shows showGameProfile(player_id) for both players.
+    Returns target table dict or None.
+    """
+    # First, scan all tables visible in lobby
+    tables = game_frame.evaluate(JS_SCAN_ALL_TABLES)
+    if not tables:
+        return None
+
+    log(f"  [scan-by-id] {len(tables)} tables visible — clicking each to find target_id={target_id}")
+    # Limit scan to max_tables_to_scan to avoid being too slow
+    tables_to_scan = tables[:max_tables_to_scan]
+
+    found_table = None
+    for t in tables_to_scan:
+        # Close any existing popup first
+        game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
+        time.sleep(0.3)
+        # Click this table
+        game_frame.evaluate(JS_CLICK_TABLE, t["id"])
+        time.sleep(1.2)
+        # Get visible profile links in popup
+        profiles = game_frame.evaluate(JS_GET_VISIBLE_PROFILES)
+        for p in profiles:
+            if p.get("player_id") == target_id:
+                found_table = t
+                log(f"  ✓✓✓ FOUND target_id={target_id} at table {t['id']} (player name: '{t['player']}', bet: {t['bet']})")
+                log(f"    profile text: {p.get('text')}")
+                break
+        if found_table:
+            break
+
+    # Close any popup before returning
+    game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
+    time.sleep(0.3)
+
+    if not found_table:
+        log(f"  [scan-by-id] target_id={target_id} not found in any of the {len(tables_to_scan)} tables scanned")
+        return None
+
+    # Filter by bet_max
+    bet_val = parse_bet(found_table.get("bet", "999999"))
+    if bet_val > bet_max:
+        log(f"  [scan-by-id] found but bet {bet_val:,} > bet_max {bet_max:,} — skipping")
+        return None
+
+    return found_table
+
+
+def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max, max_wait_seconds=60, max_tables_to_scan=30):
     """Open table browser + poll for target's table up to max_wait_seconds.
-    Returns target table dict or None if not found within the time budget."""
-    log(f"  [wait] polling for target '{target_name}' up to {max_wait_seconds}s...")
+    Strategy:
+      - If target_id is set (>0), search by ID (click each table to find player IDs)
+      - Else if target_name is set (non-empty), search by name
+      - Else error
+    Returns target table dict or None if not found within the time budget.
+    """
+    use_id = target_id and int(target_id) > 0
+    use_name = bool(target_name and target_name.strip())
+
+    if not use_id and not use_name:
+        log("  [wait] neither target_name nor target_id set — cannot find target")
+        return None
+
+    search_mode = "ID" if use_id else "name"
+    log(f"  [wait] polling for target (mode={search_mode}, target_id={target_id}, name={target_name!r}) up to {max_wait_seconds}s...")
     deadline = time.time() + max_wait_seconds
     attempt = 0
     # Open browser first with "Tất cả" filter
     open_table_browser(game_frame, page, filter_name="Tất cả")
+
     while time.time() < deadline:
         attempt += 1
-        target = find_target_table(game_frame, target_name, bet_max)
+        if use_id:
+            target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
+        else:
+            target = find_target_table(game_frame, target_name, bet_max)
         if target:
             return target
-        # Try "Còn trống" filter as fallback
+
+        # Switch to "Còn trống" filter as alternative
         game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
         time.sleep(2)
-        target = find_target_table(game_frame, target_name, bet_max)
+        if use_id:
+            target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
+        else:
+            target = find_target_table(game_frame, target_name, bet_max)
         if target:
             return target
+
         # Switch back to "Tất cả"
         game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
         # Wait + try again (every 10s)
         wait = min(10, max(2, deadline - time.time()))
-        log(f"  [wait] attempt #{attempt}: target not found — retry in {wait:.0f}s...")
+        log(f"  [wait] attempt #{attempt} (mode={search_mode}): target not found — retry in {wait:.0f}s...")
         time.sleep(wait)
         # Re-open table browser (in case lobby state changed)
         try:
@@ -496,21 +607,29 @@ def wait_for_target_with_retry(game_frame, page, target_name, bet_max, max_wait_
     return None
 
 
-def surrender_one_round(game_frame, page, target_name, bet_max, target_wait_seconds=60):
-    """Find target table → join → SURRENDER. Returns (success, balance_lost)."""
+def surrender_one_round(game_frame, page, target_name, target_id, bet_max, target_wait_seconds=60, max_tables_to_scan=30):
+    """Find target table → join → SURRENDER. Returns (success, balance_lost).
+    If target_id > 0, search by ID (preferred). Else search by name.
+    """
     log("\n[SURRENDER] starting surrender round...")
     bal_before, _ = get_balance(game_frame)
     log(f"  balance before: {bal_before:,}")
 
     # Step 1+2: poll for target's table with retry (waits up to target_wait_seconds)
-    log(f"  [1+2] looking for target '{target_name}' (up to {target_wait_seconds}s)...")
-    target = wait_for_target_with_retry(game_frame, page, target_name, bet_max, max_wait_seconds=target_wait_seconds)
+    log(f"  [1+2] looking for target (id={target_id}, name={target_name!r}) up to {target_wait_seconds}s...")
+    target = wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max,
+                                         max_wait_seconds=target_wait_seconds,
+                                         max_tables_to_scan=max_tables_to_scan)
     if not target:
-        log(f"    [!] target '{target_name}' not found within {target_wait_seconds}s — skipping surrender")
-        log(f"    [hint] make sure '{target_name}' has created a table with bet <= {bet_max} xu")
+        log(f"    [!] target not found within {target_wait_seconds}s — skipping surrender")
+        log(f"    [hint] make sure target has created a table with bet <= {bet_max} xu")
         return False, 0
 
     log(f"    ✓ found: table {target['id']} bet={target['bet']} player={target['player']}")
+
+    # Close any popup before clicking the table again
+    game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
+    time.sleep(0.5)
 
     # Step 3: click on target table
     log(f"  [3] clicking table {target['id']}...")
@@ -579,7 +698,7 @@ def surrender_one_round(game_frame, page, target_name, bet_max, target_wait_seco
     delta = bal_after - bal_before
     log(f"  [done] balance: {bal_before:,} → {bal_after:,} (Δ={delta:+,})")
     if delta < 0:
-        log(f"         ✓ lost {-delta:,} xu (transferred to '{target_name}')")
+        log(f"         ✓ lost {-delta:,} xu (transferred to target)")
     return surrender_ok, max(0, -delta)
 
 
@@ -587,10 +706,12 @@ def main():
     parser = argparse.ArgumentParser(description="Gomoku auto-cycle: claim → surrender → claim → surrender ...")
     parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck.txt"),
                         help="Cookie file (default: ck.txt)")
-    parser.add_argument("--target-name", default=os.environ.get("TARGET_NAME", "Phat"),
-                        help="Player name to find in tables (default: Phat)")
-    parser.add_argument("--target-id", default=os.environ.get("TARGET_ID", "68639698"),
-                        help="Player ID of target (for reference, default: 68639698)")
+    parser.add_argument("--target-name", default=os.environ.get("TARGET_NAME", ""),
+                        help="Player name to find in tables (optional — if target_id is set, name is ignored)")
+    parser.add_argument("--target-id", type=int, default=int(os.environ.get("TARGET_ID", "0")),
+                        help="Player ID to find (preferred — unique, no name collision). Default: 0 (search by name)")
+    parser.add_argument("--max-tables-to-scan", type=int, default=int(os.environ.get("MAX_TABLES_TO_SCAN", "30")),
+                        help="Max tables to scan when searching by ID (default: 30 — each table click takes ~1.5s)")
     parser.add_argument("--cycles", type=int, default=int(os.environ.get("CYCLES", "3")),
                         help="Number of claim→surrender cycles (default: 3)")
     parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "50000")),
@@ -708,8 +829,10 @@ def main():
                     break
 
             # PHASE 2: SURRENDER
-            log(f"\n=== Phase 2: SURRENDER to '{args.target_name}' (id={args.target_id}) ===")
-            ok, lost = surrender_one_round(game_frame, page, args.target_name, args.bet_max, target_wait_seconds=args.target_wait_seconds)
+            log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
+            ok, lost = surrender_one_round(game_frame, page, args.target_name, args.target_id, args.bet_max,
+                                           target_wait_seconds=args.target_wait_seconds,
+                                           max_tables_to_scan=args.max_tables_to_scan)
             total_xu_to_target += lost
             cycle_results.append({
                 "cycle": cycle_num,

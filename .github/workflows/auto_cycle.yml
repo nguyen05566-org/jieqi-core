@@ -96,20 +96,30 @@ jobs:
           CLAIM_COOLDOWN: '1.0'
           DELAY_BETWEEN_CYCLES: '10'
           TARGET_WAIT_SECONDS: ${{ inputs.target_wait_seconds || '60' }}
+          MAX_TABLES_TO_SCAN: '40'
           PYTHONUNBUFFERED: '1'
         run: |
           set +e
-          if [ -z "$TARGET_NAME" ]; then
-            echo "::error::Secret TARGET_NAME is not set. Go to Settings → Secrets → Actions → New repository secret"
+          # Target can be specified by ID only (preferred) or name only or both.
+          # If TARGET_ID is set (non-empty and >0), search by ID.
+          # Else if TARGET_NAME is set, search by name.
+          # Else error.
+          if [ -z "$TARGET_NAME" ] && [ -z "$TARGET_ID" ]; then
+            echo "::error::Both TARGET_NAME and TARGET_ID secrets are empty. Set at least one in Settings → Secrets → Actions"
             exit 1
           fi
           echo "=== Configuration ==="
           echo "Cookie file: $SINGLE_COOKIE_FILE (read from repo, not secret)"
-          echo "Target: $TARGET_NAME (id=$TARGET_ID)"
+          if [ -n "$TARGET_ID" ] && [ "$TARGET_ID" != "0" ]; then
+            echo "Target: search by ID=$TARGET_ID (preferred — unique)"
+          else
+            echo "Target: search by name=$TARGET_NAME"
+          fi
           echo "Cycles: $CYCLES"
           echo "Claim range: [$CLAIM_MIN, $CLAIM_MAX]"
           echo "Bet max: $BET_MAX"
           echo "Target wait: ${TARGET_WAIT_SECONDS}s per cycle"
+          echo "Max tables to scan per attempt: $MAX_TABLES_TO_SCAN"
           echo ""
           echo "=== Starting auto_cycle.py at $(date '+%H:%M:%S') ==="
           python3 auto_cycle.py
