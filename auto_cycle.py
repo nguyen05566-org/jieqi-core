@@ -22,7 +22,7 @@ Why 50k-55k?
 Usage:
   python3 auto_cycle.py \\
       --cookie ck.txt \\
-      --target-name "Phat" \\
+      --target-name "nguyen" \\
       --target-id 68639698 \\
       --cycles 3 \\
       --claim-min 50000 \\
@@ -30,7 +30,7 @@ Usage:
       --bet-max 100000
 
   Or via env vars:
-  SINGLE_COOKIE_FILE=ck.txt TARGET_NAME=Phat TARGET_ID=68639698 \\
+  SINGLE_COOKIE_FILE=ck.txt TARGET_NAME=nguyen TARGET_ID=68639698 \\
   CYCLES=3 python3 auto_cycle.py
 """
 import argparse

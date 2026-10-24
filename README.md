@@ -32,7 +32,7 @@ Vào https://github.com/nguyen05566-org/jieqi-core/settings/secrets/actions và 
 
 | Secret name | Value | Ghi chú |
 |---|---|---|
-| `TARGET_NAME` | `Phat` | Tên player cần SURRENDER cho |
+| `TARGET_NAME` | `nguyen` | Tên player cần SURRENDER cho |
 | `TARGET_ID` | `68639698` | ID nội bộ của target trên gamevh |
 
 (Không cần secret cho cookie — file `ck1.txt` đã có trong repo.)
@@ -68,10 +68,10 @@ playwright install chromium
 # Đảm bảo có file ck1.txt (cookie Facebook)
 ls ck1.txt
 
-# Chạy 3 cycles, target "Phat"
+# Chạy 3 cycles, target "nguyen"
 python3 auto_cycle.py \
     --cookie ck1.txt \
-    --target-name "Phat" \
+    --target-name "nguyen" \
     --target-id 68639698 \
     --cycles 3 \
     --claim-min 50000 \
