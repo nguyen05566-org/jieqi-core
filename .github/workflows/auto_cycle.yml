@@ -1,0 +1,138 @@
+name: auto_cycle
+
+# === CHẾ ĐỘ CHẠY ===
+# - workflow_dispatch: trigger thủ công từ tab Actions
+# - schedule (cron mỗi 6h): tự động chạy lúc 00:00, 06:00, 12:00, 18:00 UTC
+# Concurrency + cancel-in-progress: true → nếu run mới trigger khi run cũ chưa xong,
+# run cũ sẽ bị cancel để tránh chồng (chống account bị flag bot).
+on:
+  workflow_dispatch:
+    inputs:
+      cycles:
+        description: 'Số cycle (claim → surrender) mỗi run'
+        required: false
+        default: '5'
+        type: choice
+        options:
+          - '1'
+          - '3'
+          - '5'
+          - '10'
+      claim_min:
+        description: 'Ngưỡng dừng claim (xu)'
+        required: false
+        default: '50000'
+        type: string
+      claim_max:
+        description: 'Hard stop claim (xu)'
+        required: false
+        default: '55000'
+        type: string
+  schedule:
+    # Chạy mỗi 6h (UTC): 00:00, 06:00, 12:00, 18:00
+    # = 07:00, 13:00, 19:00, 01:00 giờ Việt Nam (UTC+7)
+    - cron: '0 0,6,12,18 * * *'
+
+permissions:
+  actions: write   # cho phép gh CLI trigger lại workflow (auto-restart)
+  contents: read
+
+concurrency:
+  group: auto_cycle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # max 6h trên GitHub-hosted runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright
+          playwright install chromium --with-deps
+
+      - name: Write cookie file from secret
+        env:
+          FB_COOKIE: ${{ secrets.FB_COOKIE }}
+        run: |
+          if [ -z "$FB_COOKIE" ]; then
+            echo "::error::Secret FB_COOKIE is not set. Go to Settings → Secrets and variables → Actions → New repository secret"
+            exit 1
+          fi
+          echo "$FB_COOKIE" > ck.txt
+          echo "Cookie file written ($(wc -c < ck.txt) bytes)"
+          # Verify by counting delimiters
+          COOKIE_COUNT=$(awk -F';' '{print NF}' ck.txt)
+          echo "Cookie entries: $COOKIE_COUNT"
+
+      - name: Run auto_cycle.py
+        env:
+          SINGLE_COOKIE_FILE: 'ck.txt'
+          TARGET_NAME: ${{ secrets.TARGET_NAME }}
+          TARGET_ID: ${{ secrets.TARGET_ID }}
+          CYCLES: ${{ inputs.cycles || '5' }}
+          CLAIM_MIN: ${{ inputs.claim_min || '50000' }}
+          CLAIM_MAX: ${{ inputs.claim_max || '55000' }}
+          BET_MAX: '100000'
+          HEADLESS: 'true'
+          MAX_CLAIMS_PER_CYCLE: '200'
+          CLAIM_COOLDOWN: '1.0'
+          DELAY_BETWEEN_CYCLES: '10'
+          PYTHONUNBUFFERED: '1'
+        run: |
+          set +e
+          if [ -z "$TARGET_NAME" ]; then
+            echo "::error::Secret TARGET_NAME is not set"
+            exit 1
+          fi
+          echo "=== Configuration ==="
+          echo "Cookie: ck.txt"
+          echo "Target: $TARGET_NAME (id=$TARGET_ID)"
+          echo "Cycles: $CYCLES"
+          echo "Claim range: [$CLAIM_MIN, $CLAIM_MAX]"
+          echo "Bet max: $BET_MAX"
+          echo ""
+          echo "=== Starting auto_cycle.py at $(date '+%H:%M:%S') ==="
+          python3 auto_cycle.py
+          EXIT=$?
+          echo "=== Bot exited code=$EXIT at $(date '+%H:%M:%S') ==="
+          exit 0  # always success so log step below runs
+
+      - name: Show full log
+        if: always()
+        run: |
+          echo "=== Job completed at $(date '+%H:%M:%S') ==="
+
+      - name: Upload debug artifacts (state + fingerprints)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto_cycle_state_${{ github.run_id }}
+          path: |
+            state/
+            fingerprints/
+            transfer_dests.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Auto-restart (continuous loop)
+        # Auto-trigger lại workflow sau khi hoàn thành để chạy liên tục
+        # Bật `if: always()` nếu muốn chạy liên tục; để `if: false` nếu chỉ chạy theo schedule
+        if: false  # disabled — re-enable by setting back to 'always()'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 30
+          echo "Triggering next auto_cycle run..."
+          gh workflow run auto_cycle.yml --ref "$GITHUB_REF" \
+            -f cycles="${{ inputs.cycles || '5' }}" \
+            -f claim_min="${{ inputs.claim_min || '50000' }}" \
+            -f claim_max="${{ inputs.claim_max || '55000' }}" \
+            || echo "(restart failed — will retry on next cron)"

@@ -1,0 +1,33 @@
+# Cookie files (NEVER commit these — they contain FB session tokens)
+ck.txt
+ck1.txt
+ck2.txt
+*.txt
+!README.md
+
+# Local state / fingerprint dirs
+state/
+fingerprints/
+transfer_dests.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Logs / debug screenshots
+*.log
+debug_*.png
+*.tmp
+
+# Project-local scripts (not for sharing)
+/tmp/
+scripts/
