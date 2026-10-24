@@ -759,10 +759,10 @@ def main():
                         help="Max tables to scan when searching by ID (default: 30 — each table click takes ~1.5s)")
     parser.add_argument("--cycles", type=int, default=int(os.environ.get("CYCLES", "3")),
                         help="Number of claim→surrender cycles (default: 3)")
-    parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "50000")),
-                        help="Stop claiming when balance >= this (default: 50000)")
-    parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "55000")),
-                        help="Hard stop claiming when balance >= this (default: 55000)")
+    parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "40000")),
+                        help="Stop claiming when balance >= this (default: 40000)")
+    parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "45000")),
+                        help="Hard stop claiming when balance >= this (default: 45000)")
     parser.add_argument("--bet-max", type=int, default=int(os.environ.get("BET_MAX", "100000")),
                         help="Max bet to accept (default: 100000)")
     parser.add_argument("--min-balance", type=int, default=int(os.environ.get("MIN_BALANCE", "1000")),
@@ -866,11 +866,11 @@ def main():
             if final_bal < args.claim_min and not server_rej:
                 log(f"\n[!] couldn't reach {args.claim_min:,} xu — claim exhausted")
                 log(f"    current balance: {final_bal:,}")
-                # Try surrender anyway if balance > bet_max/2
-                if final_bal >= args.bet_max // 4:
-                    log(f"    proceeding to surrender attempt anyway")
+                # Try surrender anyway if balance >= 40k
+                if final_bal >= 40000:
+                    log(f"    proceeding to surrender attempt anyway (>=40k)")
                 else:
-                    log(f"    [STOP] balance too low")
+                    log(f"    [STOP] balance too low (<40k)")
                     break
 
             # PHASE 2: SURRENDER
