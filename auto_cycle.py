@@ -710,6 +710,26 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     bal_before, _ = get_balance(game_frame)
     log(f"  balance before: {bal_before:,}")
 
+    # Step 0: Refresh page before looking for target (ensures fresh lobby state)
+    log("  [0] refreshing page before target search...")
+    try:
+        page.reload(wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(10000)
+        log("    page refreshed")
+    except Exception as e:
+        log(f"    [!] page refresh failed: {e}")
+    
+    # Re-find game frame after refresh
+    new_gf = find_game_frame(page, max_wait=60)
+    if new_gf:
+        game_frame = new_gf
+        game_frame.evaluate(JS_CLOSE_POPUPS)
+        time.sleep(2)
+        bal_before, _ = get_balance(game_frame)
+        log(f"    balance after refresh: {bal_before:,}")
+    else:
+        log("    [!] no game frame after refresh — using existing")
+
     # Step 1+2: poll for target's table with retry (waits up to target_wait_seconds)
     log(f"  [1+2] looking for target (id={target_id}, name={target_name!r}) up to {target_wait_seconds}s...")
     target = wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max,
@@ -809,7 +829,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
       5. Wait for opponent to join (if wait_for_opponent)
       6. Start game + SURRENDER
     
-    Returns (success, balance_lost).
+     Returns (success, balance_lost).
     """
     log(f"\n[SURRENDER_SELF] creating table with {bet_amount:,} xu bet...")
     
@@ -818,6 +838,29 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     
     if bal_before < min_balance:
         log(f"  [SKIP] balance {bal_before:,} < min_balance {min_balance:,}")
+        return False, 0
+    
+    # Step 0: Refresh page before creating table (ensures fresh UI state)
+    log("  [0] refreshing page before table creation...")
+    try:
+        page.reload(wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(10000)
+        log("    page refreshed")
+    except Exception as e:
+        log(f"    [!] page refresh failed: {e}")
+    
+    # Re-find game frame after refresh
+    new_gf = find_game_frame(page, max_wait=60)
+    if new_gf:
+        game_frame = new_gf
+        # Close any popups after refresh
+        game_frame.evaluate(JS_CLOSE_POPUPS)
+        time.sleep(2)
+        # Re-fetch balance
+        bal_before, _ = get_balance(game_frame)
+        log(f"    balance after refresh: {bal_before:,}")
+    else:
+        log("    [!] no game frame after refresh")
         return False, 0
     
     # Step 1: Ensure in Lobby
