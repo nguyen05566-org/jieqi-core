@@ -40,12 +40,152 @@ import sys
 import time
 import random
 import json
+import hashlib
 import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import anti_lock as al
 
 from playwright.sync_api import sync_playwright
+
+# =====================================================================
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+]
+
+_VIEWPORTS = [
+    {"width": 1920, "height": 1080},
+    {"width": 1536, "height": 864},
+    {"width": 1440, "height": 900},
+    {"width": 1366, "height": 768},
+    {"width": 1920, "height": 1200},
+]
+
+
+def _simple_fingerprint(cookie_name: str) -> dict:
+    """Generate a deterministic fingerprint based on cookie name (no file I/O)."""
+    h = int(hashlib.md5(cookie_name.encode()).hexdigest(), 16)
+    ua = _USER_AGENTS[h % len(_USER_AGENTS)]
+    vp = _VIEWPORTS[h % len(_VIEWPORTS)]
+    platform = "Win32" if "Windows" in ua else ("MacIntel" if "Macintosh" in ua else "Linux x86_64")
+    # Use vi-VN for Vietnamese cookies, en-US otherwise
+    locale = "vi-VN" if "vi" in cookie_name.lower() else "en-US"
+    return {
+        "user_agent": ua,
+        "viewport": vp,
+        "locale": locale,
+        "timezone": "Asia/Ho_Chi_Minh" if "vi" in cookie_name.lower() else "America/New_York",
+        "platform": platform,
+        "webgl_vendor": "Google Inc. (Intel)",
+        "webgl_renderer": "ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.1)",
+        "hardware_concurrency": 8,
+        "device_memory": 8,
+        "color_scheme": "light",
+        "screen": {"width": vp["width"], "height": vp["height"] + 48, "availWidth": vp["width"], "availHeight": vp["height"]},
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _build_stealth_js(fp: dict) -> str:
+    """Inline stealth JS — same as build_stealth_js but without external module."""
+    fp_json = json.dumps(fp, ensure_ascii=False)
+    return f"""() => {{
+    const FP = {fp_json};
+    try {{
+        Object.defineProperty(navigator, 'webdriver', {{get: () => undefined, configurable: true}});
+        try {{ delete Object.getPrototypeOf(navigator).webdriver; }} catch (e) {{}}
+        Object.defineProperty(navigator, 'platform', {{get: () => FP.platform, configurable: true}});
+        const mkMime = (type, suffixes, description) => {{
+            const m = {{type, suffixes, description}};
+            m.enabledPlugin = null;
+            return m;
+        }};
+        const mkPlugin = (name, filename, description, mime) => {{
+            const p = {{name, filename, description, length: 1}};
+            p[0] = mime;
+            mime.enabledPlugin = p;
+            p.item = (i) => p[i] || null;
+            p.namedItem = (n) => (n === mime.type ? mime : null);
+            p.refresh = () => {{}};
+            return p;
+        }};
+        const pdfMime = mkMime('application/pdf', 'pdf', 'Portable Document Format');
+        const pdfPlugin = mkPlugin('Chrome PDF Plugin', 'internal-pdf-viewer', 'Portable Document Format', pdfMime);
+        const pdfViewer = mkPlugin('Chrome PDF Viewer', 'mhjfbmdgcfjbbpaeojofohoefgiehjai', '', mkMime('application/pdf', 'pdf', ''));
+        const nacl = mkPlugin('Native Client', 'internal-nacl-plugin', '', mkMime('application/x-nacl', '', 'Native Client Executable'));
+        const fakePlugins = [pdfPlugin, pdfViewer, nacl];
+        fakePlugins.item = (i) => fakePlugins[i] || null;
+        fakePlugins.namedItem = (n) => ({{'Chrome PDF Plugin': pdfPlugin, 'Chrome PDF Viewer': pdfViewer, 'Native Client': nacl}}[n] || null);
+        fakePlugins.refresh = () => {{}};
+        Object.defineProperty(navigator, 'plugins', {{get: () => fakePlugins, configurable: true}});
+        Object.defineProperty(navigator, 'language', {{get: () => FP.locale, configurable: true}});
+        Object.defineProperty(navigator, 'languages', {{
+            get: () => Object.freeze([FP.locale, FP.locale.split('-')[0], 'en']),
+            configurable: true
+        }});
+        Object.defineProperty(navigator, 'hardwareConcurrency', {{get: () => FP.hardware_concurrency, configurable: true}});
+        Object.defineProperty(navigator, 'deviceMemory', {{get: () => FP.device_memory, configurable: true}});
+        Object.defineProperty(navigator, 'maxTouchPoints', {{get: () => 0, configurable: true}});
+        if (!window.chrome) {{
+            window.chrome = {{
+                runtime: {{id: undefined, connect: () => {{}}, sendMessage: () => {{}}}},
+                app: {{isInstalled: false}},
+                csi: () => {{}},
+                loadTimes: () => {{}}
+            }};
+        }}
+        if (FP.screen) {{
+            const def = (obj, prop, val) => {{
+                try {{ Object.defineProperty(obj, prop, {{get: () => val, configurable: true}}); }} catch (e) {{}}
+            }};
+            def(screen, 'width', FP.screen.width);
+            def(screen, 'height', FP.screen.height);
+            def(screen, 'availWidth', FP.screen.availWidth);
+            def(screen, 'availHeight', FP.screen.availHeight);
+            def(screen, 'colorDepth', 24);
+            def(screen, 'pixelDepth', 24);
+            def(window, 'outerWidth', FP.screen.width);
+            def(window, 'outerHeight', FP.screen.height + 37);
+        }}
+        if (window.RTCPeerConnection) {{
+            const origRTC = window.RTCPeerConnection;
+            window.RTCPeerConnection = function(...args) {{
+                if (args[0] && args[0].iceServers) {{
+                    args[0].iceServers = [];
+                }}
+                return new origRTC(...args);
+            }};
+            window.RTCPeerConnection.prototype = origRTC.prototype;
+        }}
+    }} catch (e) {{}}
+}}"""
+
+
+def _stealth_launch_args(fp: dict) -> list:
+    """Chromium launch args with basic stealth flags."""
+    args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-webrtc-multiple-routes",
+        "--disable-webrtc-pc2-experiment",
+        "--enforce-webrtc-ip-permission-check",
+        "--disable-notifications",
+        "--disable-extensions",
+        "--disable-component-extensions-with-background-pages",
+        "--disable-default-apps",
+        "--disable-gpu-sandbox",
+    ]
+    if fp.get("locale"):
+        args.append(f"--lang={fp['locale']}")
+    vp = fp.get("viewport") or {}
+    if vp.get("width") and vp.get("height"):
+        args.append(f"--window-size={vp['width']},{vp['height']}")
+    return args
 
 GAME_URL = "https://www.facebook.com/gaming/play/gomoku-vh"
 
@@ -1232,13 +1372,13 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
     try:
         browser.close()
     except: pass
-    browser = p.chromium.launch(headless=headless, args=al.stealth_launch_args(fp))
+    browser = p.chromium.launch(headless=headless, args=_stealth_launch_args(fp))
     ctx = browser.new_context(
         viewport=fp["viewport"], locale=fp["locale"],
         user_agent=fp["user_agent"], timezone_id=fp["timezone"],
         color_scheme=fp.get("color_scheme", "light"),
     )
-    ctx.add_init_script(al.build_stealth_js(fp))
+    ctx.add_init_script(_build_stealth_js(fp))
     ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
     page = ctx.new_page()
     page.set_default_timeout(45000)
@@ -1318,7 +1458,7 @@ def main():
     cookies = parse_cookie_string(cookie_raw)
     log(f"[cookie] parsed {len(cookies)} cookies from {os.path.basename(cookie_path)}")
 
-    fp = al.get_or_create_fingerprint(os.path.basename(cookie_path))
+    fp = _simple_fingerprint(os.path.basename(cookie_path))
     log(f"[fp] UA={fp['user_agent'][:50]}... viewport={fp['viewport']}")
     log(f"[config] target='{args.target_name}' (id={args.target_id})")
     log(f"         claim_min={args.claim_min:,}, claim_max={args.claim_max:,}")
@@ -1327,13 +1467,13 @@ def main():
     cycle_results = []
     total_xu_to_target = 0
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
+        browser = p.chromium.launch(headless=args.headless, args=_stealth_launch_args(fp))
         ctx = browser.new_context(
             viewport=fp["viewport"], locale=fp["locale"],
             user_agent=fp["user_agent"], timezone_id=fp["timezone"],
             color_scheme=fp.get("color_scheme", "light"),
         )
-        ctx.add_init_script(al.build_stealth_js(fp))
+        ctx.add_init_script(_build_stealth_js(fp))
         ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
         page = ctx.new_page()
         page.set_default_timeout(45000)
@@ -1410,13 +1550,13 @@ def main():
                         browser.close()
                     except: pass
                     try:
-                        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
+                        browser = p.chromium.launch(headless=args.headless, args=_stealth_launch_args(fp))
                         ctx = browser.new_context(
                             viewport=fp["viewport"], locale=fp["locale"],
                             user_agent=fp["user_agent"], timezone_id=fp["timezone"],
                             color_scheme=fp.get("color_scheme", "light"),
                         )
-                        ctx.add_init_script(al.build_stealth_js(fp))
+                        ctx.add_init_script(_build_stealth_js(fp))
                         ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
                         page = ctx.new_page()
                         page.set_default_timeout(45000)

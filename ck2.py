@@ -1221,7 +1221,7 @@ def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
 
 
 # =====================================================================
-# Inline fingerprint + stealth (no external anti_lock module)
+# Inline fingerprint + stealth (no external module)
 # =====================================================================
 _USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
@@ -1265,7 +1265,7 @@ def _simple_fingerprint(cookie_name: str) -> dict:
 
 
 def _build_stealth_js(fp: dict) -> str:
-    """Inline stealth JS — same as anti_lock.build_stealth_js but without external module."""
+    """Inline stealth JS — same as build_stealth_js but without external module."""
     fp_json = json.dumps(fp, ensure_ascii=False)
     return f"""() => {{
     const FP = {fp_json};

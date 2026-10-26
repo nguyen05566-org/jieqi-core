@@ -10,7 +10,6 @@ Gomoku auto-cycle bot for Facebook Gaming (`gomoku-vh`).
 | File | Mục đích |
 |---|---|
 | `auto_cycle.py` | Script chính — claim reward → tìm bàn target → SURRENDER → lặp lại |
-| `anti_lock.py` | Module chống khóa nick (fingerprint, stealth JS, daily quota) |
 | `ck1.txt` | **Cookie Facebook session** (commit vào repo — repo phải private) |
 | `.github/workflows/auto_cycle.yml` | GitHub Actions workflow |
 | `.gitignore` | Exclude các file nhạy cảm khác (state, fingerprints, ck2.txt...) |
