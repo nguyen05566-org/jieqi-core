@@ -1053,11 +1053,34 @@ class StopCycle(Exception):
     pass
 
 
+class BrowserCrashed(Exception):
+    """Raise when browser/page/frame is closed unexpectedly."""
+    pass
+
+
+def get_balance(game_frame):
+    try:
+        s = game_frame.evaluate(JS_GET_STATE)
+        return parse_bet(s.get("balance")), s
+    except Exception as e:
+        err_type = type(e).__name__
+        log(f"  [warn] get_balance failed: {err_type}: {e}")
+        if err_type in ('TargetClosedError', 'Error'):
+            msg = str(e).lower()
+            if 'closed' in msg or 'target' in msg or 'detached' in msg:
+                raise BrowserCrashed(f"{err_type}: {e}")
+        raise  # re-raise other exceptions
+
 def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
                total_xu_to_target, cookies, fp, ctx):
     """Execute one claim → surrender cycle. Called from main() with error handling."""
     # Check min balance
-    bal, _ = get_balance(game_frame)
+    try:
+        bal, _ = get_balance(game_frame)
+    except BrowserCrashed:
+        log(f"  [!] browser crashed during balance check")
+        raise BrowserCrashed("browser closed during get_balance")
+    
     if bal < args.min_balance:
         log(f"[STOP] balance {bal:,} < min {args.min_balance:,}")
         raise StopCycle
@@ -1263,7 +1286,7 @@ def main():
             except Exception as e:
                 err_type = type(e).__name__
                 log(f"\n[ERROR] Cycle {cycle_num} failed: {err_type}: {e}")
-                if err_type in ('TargetClosedError', 'Browser closed', 'Page closed'):
+                if err_type in ('TargetClosedError', 'BrowserCrashed', 'Browser closed', 'Page closed'):
                     log("  Browser closed — attempting relaunch...")
                     try:
                         browser.close()
