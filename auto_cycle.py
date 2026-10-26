@@ -521,37 +521,36 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
     cases gracefully, including Facebook Gaming's 'Lobby.caro' sub-paths.
     """
     log(f"  [nav] navigating to lobby: {lobby_path}")
+    # Normalize: on Facebook Gaming, "Loby.caro.0" ≈ "Lobby.caro" ≈ "Lobby"
+    # They all represent the Gomoku game lobby
     fb_equivalent_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
     
     for attempt in range(1, max_attempts + 1):
         s = game_frame.evaluate(JS_GET_STATE)
         current_path = s.get("path")
-        # Check if we're already at the target lobby
-        if current_path == lobby_path:
+        # Check if we're already at the target lobby or equivalent
+        if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
             log(f"    ✓ already at {current_path}")
             return True
-        # Check if we're at the exact target lobby path in the game's hierarchy
-        # e.g. "Lobby.caro.0.3084" contains "Lobby.caro.0"
-        if current_path and lobby_path in str(current_path):
-            log(f"    ✓ already at {current_path}")
+        # Facebook Gaming equivalents: Lobby, Lobby.caro, Lobby.caro.0 all work for Gomoku
+        if current_path in fb_equivalent_paths:
+            log(f"    ✓ at Facebook Gaming lobby {current_path} (equivalent to {lobby_path})")
             return True
-        # Try to navigate to the target lobby path via place.enterPlace()
-        log(f"    attempt {attempt}/{max_attempts}: current_path={current_path}, target={lobby_path}")
+        # Partial match: check if the game type (caro) matches
+        if current_path and "caro" in str(current_path).lower():
+            log(f"    ✓ at caro lobby {current_path} (equivalent to {lobby_path})")
+            return True
+        log(f"    attempt {attempt}/{max_attempts}: current_path={current_path}")
         r = game_frame.evaluate(JS_ENTER_LOBBY_PATH, lobby_path)
         log(f"    enter result: {r}")
         if r.get("entered") is False and "not found" in str(r.get("error", "")):
-            # place.enterPlace not available — likely Facebook Gaming
-            # Check if we're already at a Gomoku-equivalent lobby
-            if current_path in fb_equivalent_paths:
-                log(f"    ✓ at Facebook Gaming lobby {current_path} (equivalent to {lobby_path})")
+            # place.enterPlace doesn't exist — likely Facebook Gaming where Lobby is default
+            log(f"    [!] place.enterPlace not available — treating as lobby")
+            if current_path is None or current_path in fb_equivalent_paths or "caro" in str(current_path).lower():
+                log(f"    ✓ treating current path ({current_path}) as lobby")
                 return True
-            if current_path and "caro" in str(current_path).lower():
-                log(f"    ✓ at caro lobby {current_path} (equivalent to {lobby_path})")
-                return True
-            log(f"    [!] place.enterPlace not available and not at caro lobby")
-            continue
         time.sleep(5)
-        # Re-find game frame after navigation
+        # Re-find game frame
         new_gf = find_game_frame(page, max_wait=15)
         if new_gf:
             game_frame = new_gf
@@ -560,8 +559,8 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
         if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
             log(f"    ✓ reached {current_path}")
             return True
-        if current_path in fb_equivalent_paths:
-            log(f"    ✓ reached Facebook Gaming lobby {current_path} (equivalent to {lobby_path})")
+        if current_path == "Lobby":
+            log(f"    ✓ reached Lobby (equivalent to {lobby_path})")
             return True
     return False
 
