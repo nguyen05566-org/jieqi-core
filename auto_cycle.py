@@ -86,7 +86,7 @@ def log(msg=""):
 JS_CLOSE_POPUPS = """() => {
     for (const b of document.querySelectorAll('.popup_button.confirm-button, button')) {
         const t = (b.innerText || '').trim();
-        if (/^OK$|^Tôi đã hiểu$|^Đồng ý$/i.test(t) && b.offsetParent !== null) { b.click(); return true; }
+        if (/^OK$|I understand|Đã hiểu|Tôi đã hiểu|Đồng ý|Agree|Got it|Đóng|Close$/i.test(t) && b.offsetParent !== null) { b.click(); return true; }
     }
     for (const b of document.querySelectorAll('a, button')) {
         if (b.id === 'closeLuckyWheelButton' && b.offsetParent !== null) { b.click(); return true; }
@@ -166,23 +166,39 @@ JS_CLICK_CREATE = """() => {
 
 # Gomoku UI navigation (for surrender phase)
 JS_CLICK_CHON_BAN = """() => {
+    const vietnamese = ['Chọn bàn'];
+    const english = ['Find Table', 'Select Table', 'Choose Table'];
+    const keywords = vietnamese.concat(english);
     for (const b of document.querySelectorAll('a, button')) {
-        if ((b.innerText || '').trim() === 'Chọn bàn' && b.offsetParent !== null) { b.click(); return true; }
+        const t = (b.innerText || '').trim();
+        if (keywords.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
     }
     return false;
 }"""
 
 JS_CLICK_FILTER_TAT_CA = """() => {
+    // "Tất cả" (Vietnamese) / "All" (English)
+    const texts = ['Tất cả', 'All'];
     for (const b of document.querySelectorAll('a, button')) {
-        if (b.id === 'table_filter0' && b.offsetParent !== null) { b.click(); return true; }
+        const t = (b.innerText || '').trim();
+        if (texts.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
     }
+    // Fallback: filter buttons by id (original approach)
+    const byId = document.getElementById('table_filter0');
+    if (byId && byId.offsetParent !== null) { byId.click(); return true; }
     return false;
 }"""
 
 JS_CLICK_FILTER_CON_TRONG = """() => {
+    // "Còn trống" (Vietnamese) / "Available" (English)
+    const texts = ['Còn trống', 'Available', 'Open Seats'];
     for (const b of document.querySelectorAll('a, button')) {
-        if (b.id === 'table_filter1' && b.offsetParent !== null) { b.click(); return true; }
+        const t = (b.innerText || '').trim();
+        if (texts.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
     }
+    // Fallback: filter buttons by id (original approach)
+    const byId = document.getElementById('table_filter1');
+    if (byId && byId.offsetParent !== null) { byId.click(); return true; }
     return false;
 }"""
 
@@ -284,9 +300,17 @@ JS_CLICK_TABLE = """(tableId) => {
 }"""
 
 JS_CLICK_VAO_CHOI = """() => {
+    // "Vào chơi" (Vietnamese) / "Play" / "Join Game" / "Join" (English)
+    const texts = ['Vào chơi', 'Play', 'Join Game', 'Join'];
     for (const b of document.querySelectorAll('input.msgButton, button, input[type=button]')) {
         const t = (b.value || b.innerText || '').trim();
-        if (t === 'Vào chơi' && b.offsetParent !== null) { b.click(); return {clicked: true}; }
+        if (texts.some(k => t === k) && b.offsetParent !== null) { b.click(); return {clicked: true}; }
+    }
+    // Fallback: fuzzy match (contains) for English variants
+    for (const b of document.querySelectorAll('input.msgButton, button, input[type=button]')) {
+        if (b.offsetParent === null) continue;
+        const t = (b.value || b.innerText || '').trim().toLowerCase();
+        if (t === 'chơi' || t === 'vào' || t === 'play' || t === 'join') { b.click(); return {clicked: true}; }
     }
     return {clicked: false};
 }"""
@@ -624,10 +648,15 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
 
 
 def open_table_browser(game_frame, page, filter_name="Tất cả"):
-    """Click 'Chọn bàn' → filter (Tất cả / Còn trống)."""
+    """Click 'Chọn bàn' → filter (Tất cả / Còn trống).
+    Only operates in Gomoku lobby (Loby.caro.0); if not in Gomoku lobby, returns False.
+    """
     s = game_frame.evaluate(JS_GET_STATE)
-    if s.get("path") != "Lobby":
-        ensure_in_lobby(game_frame, page)
+    current_path = s.get("path")
+    fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
+    if current_path not in fb_lobby_paths:
+        log(f"  [open_table_browser] NOT in Gomoku lobby (path={current_path}) — refusing to search here")
+        return False
     game_frame.evaluate(JS_CLOSE_POPUPS)
     time.sleep(0.5)
     game_frame.evaluate(JS_CLICK_CHON_BAN)
@@ -740,6 +769,8 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
       - Else if target_name is set (non-empty), search by name
       - Else error
     Returns target table dict or None if not found within the time budget.
+
+    Only searches in Loby.caro.0 lobby — will not search if we're in a different lobby.
     """
     use_id = target_id and int(target_id) > 0
     use_name = bool(target_name and target_name.strip())
@@ -747,6 +778,15 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
     if not use_id and not use_name:
         log("  [wait] neither target_name nor target_id set — cannot find target")
         return None
+
+    # Verify we're in the Gomoku lobby (Loby.caro.0) before searching
+    s = game_frame.evaluate(JS_GET_STATE)
+    current_path = s.get("path")
+    fb_equivalent_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
+    if current_path not in fb_equivalent_paths:
+        log(f"  [wait] NOT in Gomoku lobby (path={current_path}) — only searching in Loby.caro.0")
+        return None
+    log(f"  [wait] at Gomoku lobby: {current_path}")
 
     search_mode = "ID" if use_id else "name"
     log(f"  [wait] polling for target (mode={search_mode}, target_id={target_id}, name={target_name!r}) up to {max_wait_seconds}s...")
@@ -783,8 +823,14 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
         # Re-open table browser (in case lobby state changed)
         try:
             s = game_frame.evaluate(JS_GET_STATE)
-            if s.get("path") != "Lobby":
+            current_path = s.get("path")
+            fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
+            if current_path not in fb_lobby_paths:
+                log(f"  [wait] retry: not in Gomoku lobby (path={current_path}) — attempting to return")
                 ensure_in_lobby(game_frame, page)
+                if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
+                    log(f"  [wait] retry: could not return to {DEFAULT_GOMOKU_LOBBY} — aborting search")
+                    return None
             open_table_browser(game_frame, page, filter_name="Tất cả")
         except Exception as e:
             log(f"  [wait] re-open lobby err: {e}")
