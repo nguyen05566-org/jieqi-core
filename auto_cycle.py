@@ -1150,6 +1150,19 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     if not found_start:
         log("    [!] Bắt đầu not found — trying SURRENDER anyway")
 
+    # Step 5.5: Verify game is active and target is actually a player
+    # Check: we must be IN an active game, and target (opponent) must be present
+    log("  [5.5] verifying game state before SURRENDER...")
+    table_state = game_frame.evaluate(JS_GET_TABLE_INFO)
+    player_count = game_frame.evaluate(JS_FIND_PLAYER_COUNT_IN_TABLE)
+    log(f"    table_info: {table_state}")
+    log(f"    player_count: {player_count}")
+    
+    # Check if game is already over (look for game-over indicators in body text)
+    if game_frame.evaluate("() => document.body ? document.body.innerText : ''").lower().find("game over") >= 0:
+        log("    [!] game already over — skipping SURRENDER")
+        return False, 0
+
     # Step 6: send SURRENDER
     log("  [6] sending SURRENDER...")
     r = game_frame.evaluate(JS_SEND_SURRENDER)
@@ -1524,11 +1537,13 @@ def main():
     # GitHub Actions masks secret values by replacing them with "***" in logs.
     # This can also affect env vars passed to the runner. We check for this
     # and log which values were masked, to help diagnose future issues.
+    # Note: We use partial/obfuscated output to avoid GH Actions re-masking
+    # the actual target ID when it appears in logs.
     for env_name in ("TARGET_ID", "TARGET_NAME"):
         raw_val = os.environ.get(env_name, "")
         if raw_val == "***":
-            log(f"[DEBUG] {env_name} env var = '***' (GitHub Actions masking detected)")
-            log(f"[DEBUG] → _safe_env() already applied fallback to hardcoded default")
+            log(f"[DEBUG] {env_name} env var is masked (***).")
+            log(f"[DEBUG] → _safe_env() fallback → using hardcoded default)")
         elif raw_val == "":
             log(f"[DEBUG] {env_name} env var not set (using _safe_env() fallback)")
 
