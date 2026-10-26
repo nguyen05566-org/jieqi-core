@@ -762,21 +762,22 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
     return found_table
 
 
-def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max, max_wait_seconds=60, max_tables_to_scan=30):
+def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max, max_wait_seconds=60, max_tables_to_scan=40):
     """Open table browser + poll for target's table up to max_wait_seconds.
     Strategy:
-      - If target_id is set (>0), search by ID (click each table to find player IDs)
-      - Else if target_name is set (non-empty), search by name
-      - Else error
+      1. If target_id is set (>0), search by ID (click each table to find player IDs via WS tap)
+      2. If ID search fails and target_name is set, fall back to name-based search (scans table text)
+      3. If target_id is not set but target_name is set, search by name only
+      4. Else error
     Returns target table dict or None if not found within the time budget.
 
-    Only searches in Loby.caro.0 lobby — will not search if we're in a different lobby.
+    Only searches in Loby.caro.0 lobby - will not search if we're in a different lobby.
     """
     use_id = target_id and int(target_id) > 0
     use_name = bool(target_name and target_name.strip())
 
     if not use_id and not use_name:
-        log("  [wait] neither target_name nor target_id set — cannot find target")
+        log("  [wait] neither target_name nor target_id set - cannot find target")
         return None
 
     # Verify we're in the Gomoku lobby (Loby.caro.0) before searching
@@ -784,41 +785,55 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
     current_path = s.get("path")
     fb_equivalent_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
     if current_path not in fb_equivalent_paths:
-        log(f"  [wait] NOT in Gomoku lobby (path={current_path}) — only searching in Loby.caro.0")
+        log(f"  [wait] NOT in Gomoku lobby (path={current_path}) - only searching in Loby.caro.0")
         return None
     log(f"  [wait] at Gomoku lobby: {current_path}")
 
-    search_mode = "ID" if use_id else "name"
+    search_modes = []
+    if use_id:
+        search_modes.append("ID")
+    if use_name:
+        search_modes.append("name")
+    search_mode = "/".join(search_modes)
     log(f"  [wait] polling for target (mode={search_mode}, target_id={target_id}, name={target_name!r}) up to {max_wait_seconds}s...")
     deadline = time.time() + max_wait_seconds
     attempt = 0
-    # Open browser first with "Tất cả" filter
+    # Open browser first with "Tat ca" filter
     open_table_browser(game_frame, page, filter_name="Tất cả")
 
     while time.time() < deadline:
         attempt += 1
+        # Try ID-based search first (preferred)
         if use_id:
             target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
-        else:
+            if target:
+                return target
+
+        # Fallback to name-based search if ID search failed or not using ID
+        if use_name:
             target = find_target_table(game_frame, target_name, bet_max)
-        if target:
-            return target
+            if target:
+                log(f"  [wait] FOUND target by name: {target_name}")
+                return target
 
         # Switch to "Còn trống" filter as alternative
         game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
         time.sleep(2)
         if use_id:
             target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
-        else:
+            if target:
+                return target
+        if use_name:
             target = find_target_table(game_frame, target_name, bet_max)
-        if target:
-            return target
+            if target:
+                log(f"  [wait] FOUND target by name: {target_name}")
+                return target
 
         # Switch back to "Tất cả"
         game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
         # Wait + try again (every 10s)
         wait = min(10, max(2, deadline - time.time()))
-        log(f"  [wait] attempt #{attempt} (mode={search_mode}): target not found — retry in {wait:.0f}s...")
+        log(f"  [wait] attempt #{attempt} (mode={search_mode}): target not found - retry in {wait:.0f}s...")
         time.sleep(wait)
         # Re-open table browser (in case lobby state changed)
         try:
@@ -826,10 +841,10 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
             current_path = s.get("path")
             fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
             if current_path not in fb_lobby_paths:
-                log(f"  [wait] retry: not in Gomoku lobby (path={current_path}) — attempting to return")
+                log(f"  [wait] retry: not in Gomoku lobby (path={current_path}) - attempting to return")
                 ensure_in_lobby(game_frame, page)
                 if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
-                    log(f"  [wait] retry: could not return to {DEFAULT_GOMOKU_LOBBY} — aborting search")
+                    log(f"  [wait] retry: could not return to {DEFAULT_GOMOKU_LOBBY} - aborting search")
                     return None
             open_table_browser(game_frame, page, filter_name="Tất cả")
         except Exception as e:
