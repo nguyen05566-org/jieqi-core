@@ -1521,6 +1521,18 @@ def main():
                         help="Seconds to wait for opponent when creating own table (default: 120)")
     args = parser.parse_args()
 
+    # --- Debug: detect GitHub Actions secret masking ---
+    # GitHub Actions masks secret values by replacing them with "***" in logs.
+    # This can also affect env vars passed to the runner. We check for this
+    # and log which values were masked, to help diagnose future issues.
+    for env_name in ("TARGET_ID", "TARGET_NAME"):
+        raw_val = os.environ.get(env_name, "")
+        if raw_val == "***":
+            log(f"[DEBUG] {env_name} env var = '***' (GitHub Actions masking detected)")
+            log(f"[DEBUG] → _safe_env() already applied fallback to hardcoded default")
+        elif raw_val == "":
+            log(f"[DEBUG] {env_name} env var not set (using _safe_env() fallback)")
+
     cookie_path = args.cookie
     if not os.path.isabs(cookie_path):
         cookie_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), cookie_path)
