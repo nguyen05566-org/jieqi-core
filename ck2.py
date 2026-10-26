@@ -416,6 +416,45 @@ JS_GO_LOBBY = """() => {
     } catch(e) { return 'err: ' + e.toString(); }
 }"""
 
+# Navigate to Gomoku-specific lobby (Lobby.caro) from main Lobby
+# Clicks the Gomoku game icon/tab in the game list
+JS_NAVIGATE_TO_GOMOKU_LOBBY = """() => {
+    const keywords = ['gomoku', 'caro', 'game caro', 'gameo'];
+    // Try clicking game tabs/navigation elements with text matching keywords
+    // Also check img alt attributes and aria-labels
+    for (const el of document.querySelectorAll('a, button, [role="button"], div, span')) {
+        const innerText = (el.innerText || '').trim().toLowerCase();
+        const textContent = (el.textContent || '').trim().toLowerCase();
+        const altText = (el.querySelector('img') && el.querySelector('img').alt) ? el.querySelector('img').alt.toLowerCase() : '';
+        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+        const allText = (innerText + ' ' + textContent + ' ' + altText + ' ' + ariaLabel);
+        if (allText.length === 0 || allText.length > 80) continue;
+        if (el.offsetParent === null && el.tagName !== 'A') continue;
+        if (keywords.some(k => allText.includes(k))) {
+            el.click();
+            return true;
+        }
+    }
+    // Try clicking images with gomoku/caro in src or alt
+    for (const img of document.querySelectorAll('img')) {
+        const src = (img.src || '').toLowerCase();
+        const alt = (img.alt || '').toLowerCase();
+        if (src.includes('gomoku') || src.includes('caro') || alt.includes('gomoku') || alt.includes('caro')) {
+            img.click();
+            return true;
+        }
+    }
+    // Try clicking links with gomoku/caro in href
+    for (const a of document.querySelectorAll('a')) {
+        const href = (a.href || '').toLowerCase();
+        if (href.includes('gomoku') || href.includes('caro')) {
+            a.click();
+            return true;
+        }
+    }
+    return false;
+}"""
+
 # === Create table + wait for opponent (reverse surrender) ===
 
 JS_SELECT_BET_BY_VALUE = """(betValue) => {
@@ -517,17 +556,19 @@ def is_browser_alive(page):
 
 
 def ensure_in_lobby(game_frame, page, max_attempts=3):
-    """Make sure we're back at Lobby (not in a table).
+    """Make sure we're back at Gomoku lobby (not in a table).
     
-    On Facebook Gaming, lobby paths include: Lobby, Lobby.caro, Lobby.caro.0, etc.
+    On Facebook Gaming, Gomoku-specific lobby paths include: Lobby.caro, Lobby.caro.0, etc.
+    'Lobby' alone is the main FB Gaming page — NOT Gomoku-specific.
     """
-    fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
+    gomoku_lobby_paths = {"Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
+    gomoku_lobby_paths_alt = {"Loby.caro.0", "Loby.caro"}
     for _ in range(max_attempts):
         s = game_frame.evaluate(JS_GET_STATE)
         path = s.get("path")
-        if path in fb_lobby_paths or path == "Lobby":
+        if path in gomoku_lobby_paths or path in gomoku_lobby_paths_alt or (path and "caro" in path.lower()):
             return True
-        log(f"  [nav] path={path} — leaving table...")
+        log(f"  [nav] path={path} — leaving table for Gomoku lobby...")
         try:
             game_frame.evaluate(JS_GO_LOBBY)
         except Exception as e:
@@ -538,7 +579,7 @@ def ensure_in_lobby(game_frame, page, max_attempts=3):
             game_frame = new_gf
     s = game_frame.evaluate(JS_GET_STATE)
     path = s.get("path")
-    return path in fb_lobby_paths or path == "Lobby"
+    return path in gomoku_lobby_paths or path in gomoku_lobby_paths_alt or (path and "caro" in path.lower())
 
 
 DEFAULT_GOMOKU_LOBBY = "Loby.caro.0"
@@ -547,14 +588,14 @@ DEFAULT_GOMOKU_LOBBY = "Loby.caro.0"
 def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attempts=5):
     """Navigate to a specific lobby path (e.g. 'Loby.caro.0') and wait for it to load.
     
-    On Facebook Gaming, the game URL already goes to the Gomoku lobby directly,
-    so 'Lobby' path is equivalent to 'Loby.caro.0'. This function handles both
-    cases gracefully, including Facebook Gaming's 'Lobby.caro' sub-paths.
+    IMPORTANT: 'Lobby' (Facebook Gaming main page) contains ALL games — NOT Gomoku-only.
+    We must navigate to 'Lobby.caro' to see Gomoku tables exclusively.
     """
     log(f"  [nav] navigating to lobby: {lobby_path}")
-    # Normalize: on Facebook Gaming, "Loby.caro.0" ≈ "Lobby.caro" ≈ "Lobby"
-    # They all represent the Gomoku game lobby
-    fb_equivalent_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
+    # Gomoku-specific lobbies: these contain ONLY Gomoku tables
+    gomoku_lobby_paths = {"Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
+    # Also accept "Loby.caro.0" for non-Facebook variants
+    gomoku_lobby_paths_alt = {"Loby.caro.0", "Loby.caro"}
     
     for attempt in range(1, max_attempts + 1):
         s = game_frame.evaluate(JS_GET_STATE)
@@ -563,22 +604,46 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
         if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
             log(f"    ✓ already at {current_path}")
             return True
-        # Facebook Gaming equivalents: Lobby, Lobby.caro, Lobby.caro.0 all work for Gomoku
-        if current_path in fb_equivalent_paths:
-            log(f"    ✓ at Facebook Gaming lobby {current_path} (equivalent to {lobby_path})")
+        # Gomoku-specific lobbies: Lobby.caro, Lobby.caro.0, Lobby.caro.1
+        if current_path in gomoku_lobby_paths or current_path in gomoku_lobby_paths_alt:
+            log(f"    ✓ at Gomoku lobby {current_path} (equivalent to {lobby_path})")
             return True
         # Partial match: check if the game type (caro) matches
         if current_path and "caro" in str(current_path).lower():
             log(f"    ✓ at caro lobby {current_path} (equivalent to {lobby_path})")
             return True
+        # If at "Lobby" with game state, it's the Gomoku game loaded directly
+        if current_path == "Lobby":
+            try:
+                s_check = game_frame.evaluate(JS_GET_STATE)
+                if s_check.get("playerId") and s_check.get("balance"):
+                    log(f"    ✓ at Lobby with game state — Gomoku game loaded directly")
+                    return True
+            except: pass
         log(f"    attempt {attempt}/{max_attempts}: current_path={current_path}")
         r = game_frame.evaluate(JS_ENTER_LOBBY_PATH, lobby_path)
         log(f"    enter result: {r}")
         if r.get("entered") is False and "not found" in str(r.get("error", "")):
-            # place.enterPlace doesn't exist — likely Facebook Gaming where Lobby is default
-            log(f"    [!] place.enterPlace not available — treating as lobby")
-            if current_path is None or current_path in fb_equivalent_paths or "caro" in str(current_path).lower():
-                log(f"    ✓ treating current path ({current_path}) as lobby")
+            log(f"    [!] place.enterPlace not available — trying JS_CLICK_GOMOKU_GAME")
+            # Click Gomoku game icon to navigate from Lobby → Lobby.caro
+            clicked = game_frame.evaluate(JS_NAVIGATE_TO_GOMOKU_LOBBY)
+            if clicked:
+                log(f"    ✓ clicked Gomoku game icon")
+                time.sleep(5)
+            else:
+                log(f"    [!] Gomoku game icon not found — may need manual navigation")
+                if current_path is None or "caro" in str(current_path).lower():
+                    log(f"    ✓ treating current path ({current_path}) as Gomoku lobby")
+                    return True
+        # After all attempts, check if we have game state (balance + playerId)
+        # If so, we're likely already in the Gomoku game at 'Lobby' path
+        s = game_frame.evaluate(JS_GET_STATE)
+        current_path = s.get("path")
+        if current_path == "Lobby":
+            # On direct game load, 'Lobby' IS the Gomoku lobby
+            # Verify by checking game state
+            if s.get("path") and s.get("playerId"):
+                log(f"  [nav] at 'Lobby' with game state — treating as Gomoku lobby")
                 return True
         time.sleep(5)
         # Re-find game frame
@@ -590,8 +655,11 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
         if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
             log(f"    ✓ reached {current_path}")
             return True
-        if current_path == "Lobby":
-            log(f"    ✓ reached Lobby (equivalent to {lobby_path})")
+        # Check for Gomoku-specific lobbies (Lobby.caro, Lobby.caro.0, etc.)
+        gomoku_lobby_paths = {"Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
+        gomoku_lobby_paths_alt = {"Loby.caro.0", "Loby.caro"}
+        if current_path in gomoku_lobby_paths or current_path in gomoku_lobby_paths_alt or (current_path and "caro" in current_path.lower()):
+            log(f"    ✓ reached Gomoku lobby: {current_path}")
             return True
     return False
 
@@ -680,14 +748,41 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
 
 def open_table_browser(game_frame, page, filter_name="Tất cả"):
     """Click 'Chọn bàn' → filter (Tất cả / Còn trống).
-    Only operates in Gomoku lobby (Loby.caro.0); if not in Gomoku lobby, returns False.
+    Only operates in Gomoku lobby (Lobby.caro* / Loby.caro*); if not in Gomoku lobby,
+    attempts to navigate to Gomoku lobby first.
     """
     s = game_frame.evaluate(JS_GET_STATE)
     current_path = s.get("path")
-    fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-    if current_path not in fb_lobby_paths:
-        log(f"  [open_table_browser] NOT in Gomoku lobby (path={current_path}) — refusing to search here")
-        return False
+    # Gomoku-specific lobbies contain ONLY Gomoku tables
+    gomoku_lobby_paths = {"Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
+    gomoku_lobby_paths_alt = {"Loby.caro.0", "Loby.caro"}
+    
+    # If at "Lobby" (main FB Gaming page), we need to verify it's the Gomoku lobby
+    # On direct game load, "Lobby" with game state IS the Gomoku lobby
+    if current_path == "Lobby" or current_path is None:
+        # Check if we have game state — if so, this IS the Gomoku lobby
+        if current_path == "Lobby" and s.get("playerId") and s.get("balance"):
+            log(f"  [open_table_browser] at Lobby with game state — treating as Gomoku lobby")
+        else:
+            log(f"  [open_table_browser] at {current_path} — navigating to Gomoku lobby...")
+            if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
+                log(f"  [open_table_browser] FAILED to navigate to Gomoku lobby")
+                return False
+            # Re-read path after navigation
+            s = game_frame.evaluate(JS_GET_STATE)
+            current_path = s.get("path")
+    
+    # Verify we're in Gomoku lobby now
+    # "Lobby" is accepted if it has game state (playerId + balance = in-game)
+    if current_path not in gomoku_lobby_paths and current_path not in gomoku_lobby_paths_alt:
+        if not (current_path and "caro" in str(current_path).lower()):
+            # Allow "Lobby" if game state is present (Gomoku game loaded directly)
+            if current_path == "Lobby" and s.get("playerId") and s.get("balance"):
+                pass  # OK — Gomoku game at Lobby path
+            else:
+                log(f"  [open_table_browser] NOT in Gomoku lobby (path={current_path}) — refusing to search here")
+                return False
+    
     game_frame.evaluate(JS_CLOSE_POPUPS)
     time.sleep(0.5)
     game_frame.evaluate(JS_CLICK_CHON_BAN)
