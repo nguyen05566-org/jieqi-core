@@ -860,6 +860,15 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
         game_frame = new_gf
         game_frame.evaluate(JS_CLOSE_POPUPS)
         time.sleep(2)
+        # Wait for game state to be fully loaded
+        for _ in range(10):
+            try:
+                s = game_frame.evaluate(JS_GET_STATE)
+                if s.get("path") and s.get("playerId"):
+                    break
+            except:
+                pass
+            time.sleep(2)
         bal_before, _ = get_balance(game_frame)
         log(f"    balance after refresh: {bal_before:,}")
     else:
@@ -1234,6 +1243,16 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
     page.wait_for_timeout(20000)
     game_frame = find_game_frame(page, max_wait=60)
     if game_frame:
+        # Wait for game state to be fully loaded
+        log("  [restart] waiting for game state...")
+        for _ in range(15):
+            try:
+                s = game_frame.evaluate(JS_GET_STATE)
+                if s.get("path") and s.get("playerId"):
+                    break
+            except:
+                pass
+            time.sleep(2)
         log("  [restart] ✓ browser restarted, game frame ready")
     else:
         log("  [restart] ✗ no game frame after restart")
@@ -1330,6 +1349,17 @@ def main():
         # Close any startup popups
         game_frame.evaluate(JS_CLOSE_POPUPS)
         time.sleep(2)
+
+        # Wait for game state to be fully loaded
+        log("[init] waiting for game state...")
+        for _ in range(15):
+            try:
+                s = game_frame.evaluate(JS_GET_STATE)
+                if s.get("path") and s.get("playerId"):
+                    break
+            except:
+                pass
+            time.sleep(2)
 
         try:
             bal, state = get_balance(game_frame)
