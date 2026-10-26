@@ -30,7 +30,7 @@ on:
         required: false
         default: '55000'
         type: string
-        target_wait_seconds:
+      target_wait_seconds:
         description: 'Số giây chờ target tạo bàn trước khi bỏ cuộc (mỗi cycle)'
         required: false
         default: '60'
