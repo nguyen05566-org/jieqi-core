@@ -312,21 +312,23 @@ JS_CLICK_VAO_CHOI = """() => {
 }"""
 
 JS_FIND_BAT_DAU = """() => {
+    const keywords = ['bắt đầu', 'start', 'play', 'begin'];
     for (const b of document.querySelectorAll('button, input[type=button], [role=button], a')) {
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
-        const t = (b.innerText || b.textContent || b.value || '').trim();
-        if (t.includes('Bắt đầu')) return {found: true, text: t};
+        const t = (b.innerText || b.textContent || b.value || '').trim().toLowerCase();
+        if (keywords.some(k => t.includes(k))) return {found: true, text: t};
     }
     return {found: false};
 }"""
 
 JS_CLICK_BAT_DAU = """() => {
+    const keywords = ['bắt đầu', 'start', 'play', 'begin'];
     for (const b of document.querySelectorAll('button, input[type=button], [role=button], a')) {
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
-        const t = (b.innerText || b.textContent || b.value || '').trim();
-        if (t.includes('Bắt đầu')) { b.click(); return {clicked: true, text: t}; }
+        const t = (b.innerText || b.textContent || b.value || '').trim().toLowerCase();
+        if (keywords.some(k => t.includes(k))) { b.click(); return {clicked: true, text: t}; }
     }
     return {clicked: false};
 }"""
