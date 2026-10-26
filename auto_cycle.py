@@ -1268,8 +1268,16 @@ def main():
         game_frame.evaluate(JS_CLOSE_POPUPS)
         time.sleep(2)
 
-        bal, state = get_balance(game_frame)
-        log(f"\n[init] balance: {bal:,}, player_id: {state.get('playerId')}, path: {state.get('path')}")
+        try:
+            bal, state = get_balance(game_frame)
+            log(f"\n[init] balance: {bal:,}, player_id: {state.get('playerId')}, path: {state.get('path')}")
+        except Exception as e:
+            log(f"\n[init] FAILED to get balance: {type(e).__name__}: {e}")
+            log("[init] browser may have crashed — stopping")
+            try:
+                browser.close()
+            except: pass
+            return 1
 
         for cycle_num in range(1, args.cycles + 1):
             log(f"\n{'#' * 60}")
@@ -1324,7 +1332,10 @@ def main():
             bal_final, _ = get_balance(game_frame)
         except Exception:
             log("[WARN] couldn't get final balance — browser may have crashed")
-            bal_final = final_bal if cycle_results else 0
+            if cycle_results:
+                bal_final = cycle_results[-1].get("balance_after_claim", 0)
+            else:
+                bal_final = 0
         try:
             browser.close()
         except Exception:
