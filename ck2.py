@@ -247,10 +247,15 @@ JS_GET_VISIBLE_PROFILES = """() => {
 # containing player_ids of all players in that table. We tap WS messages and
 # search for target_id in the binary data — no DOM parsing needed.
 
+# PLAYER_ENTERED command code: bytes [0,1] = [0x01, 0x9E]
+# The message structure is: [cmd_hi, cmd_lo, ...payload...]
+# We filter in JS to only store PLAYER_ENTERED messages, reducing Python-side search time.
+
 JS_INSTALL_WS_TAP = """() => {
     if (window.__tap_installed) return true;
     window.__tap = [];
     window.__last_tap_count = 0;
+    window.__tap_diag = [];  // diagnostic: all messages with cmd code
     const ws = window.connection && window.connection.ws;
     if (!ws) return false;
     const orig = ws.onmessage;
@@ -261,7 +266,16 @@ JS_INSTALL_WS_TAP = """() => {
             if (ev.data instanceof ArrayBuffer) bytes = Array.from(new Uint8Array(ev.data));
             else if (ev.data && ev.data.data) bytes = Array.from(new Uint8Array(ev.data.data));
         } catch(e) {}
-        if (bytes) window.__tap.push({ts: Date.now(), bytes});
+        if (!bytes || bytes.length === 0) return;
+        // Extract 2-byte command code from first two bytes
+        const cmdCode = (bytes[0] << 8) | bytes[1];
+        // Store diagnostic for ALL messages (small overhead, useful for debugging)
+        const hexBytes = bytes.slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        window.__tap_diag.push({ts: Date.now(), cmd: cmdCode, len: bytes.length, hex: hexBytes});
+        // Only store PLAYER_ENTERED (0x019E) messages for target search
+        if (cmdCode === 0x019E) {
+            window.__tap.push({ts: Date.now(), bytes});
+        }
         if (orig) return orig.call(ws, ev);
     };
     window.__tap_installed = true;
@@ -271,6 +285,9 @@ JS_INSTALL_WS_TAP = """() => {
 JS_CLEAR_TAP = "() => { window.__tap = []; window.__last_tap_count = 0; return true; }"
 
 JS_GET_TAP = "() => window.__tap || []"
+
+# Diagnostic: dump captured WS messages (command codes + hex of first 16 bytes)
+JS_GET_TAP_DIAG = "() => window.__tap_diag || []"
 
 # Scan ALL tables (id, bet, player_name) without name filter
 JS_SCAN_ALL_TABLES = """() => {
@@ -698,8 +715,9 @@ def find_target_table(game_frame, target_name, bet_max):
 def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
     """Find a table where target_id is one of the players.
     Uses WS tap approach (faster than DOM popup parsing):
-      1. Install WS message tap (if not installed yet)
-      2. For each table: clear tap, click table, check WS messages for target_id bytes
+      1. Install WS message tap (if not installed yet) — filters to only PLAYER_ENTERED (0x019E) messages
+      2. For each table: clear tap, click table, wait for new WS messages (up to 3s),
+         check for target_id in the PLAYER_ENTERED message bytes
       3. If found, return table dict
 
     This works because when we click a table, server sends PLAYER_ENTERED (0x019E)
@@ -711,7 +729,10 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
     target_bytes_list = list(target_be)
 
     # Install WS tap (idempotent — if already installed, returns true)
-    game_frame.evaluate(JS_INSTALL_WS_TAP)
+    tap_installed = game_frame.evaluate(JS_INSTALL_WS_TAP)
+    if not tap_installed:
+        log("  [scan-by-id] WS tap failed to install — falling back to name search")
+        return None
 
     # Scan all tables visible in lobby
     tables = game_frame.evaluate(JS_SCAN_ALL_TABLES)
@@ -730,8 +751,38 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
         game_frame.evaluate(JS_CLEAR_TAP)
         # Click this table
         game_frame.evaluate(JS_CLICK_TABLE, t["id"])
-        time.sleep(2.0)  # wait for PLAYER_ENTERED to arrive
-        # Check tap messages for target_id
+
+        # Wait for PLAYER_ENTERED message to arrive — poll based on new messages,
+        # rather than fixed sleep. PLAYER_ENTERED should arrive within 1-2s.
+        # We poll JS_GET_TAP every 150ms, breaking when messages arrive.
+        click_deadline = time.time() + 3.0  # max 3s per table
+        while time.time() < click_deadline:
+            tap = game_frame.evaluate(JS_GET_TAP)
+            if tap:
+                break
+            time.sleep(0.15)  # small poll interval
+
+        # On first table, dump WS diagnostic to verify PLAYER_ENTERED is captured
+        if t == tables_to_scan[0] and not getattr(find_target_by_id, '_diag_dumped', False):
+            find_target_by_id._diag_dumped = True
+            try:
+                diag = game_frame.evaluate(JS_GET_TAP_DIAG)
+                tap_msgs = game_frame.evaluate(JS_GET_TAP)
+                log(f"  [WS-DIAG] After clicking table {t['id']}: {len(diag)} total WS msgs, {len(tap_msgs)} PLAYER_ENTERED (0x019E)")
+                for m in diag[-5:]:
+                    log(f"    cmd=0x{m.get('cmd',0):04X} len={m.get('len',0)} hex={m.get('hex','')[:60]}")
+                if len(tap_msgs) == 0:
+                    code_counts = {}
+                    for m in diag:
+                        c = m.get('cmd', 0)
+                        code_counts[c] = code_counts.get(c, 0) + 1
+                    log(f"  [WS-DIAG] No PLAYER_ENTERED found. Cmd codes present:")
+                    for code, count in sorted(code_counts.items()):
+                        log(f"    0x{code:04X}: {count} messages")
+            except Exception as e:
+                log(f"  [WS-DIAG] dump failed: {e}")
+
+        # Check tap messages for target_id (in PLAYER_ENTERED messages only)
         tap = game_frame.evaluate(JS_GET_TAP)
         for msg in tap:
             b = msg.get('bytes') or []
@@ -740,6 +791,10 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
                     log(f"  ✓✓✓ FOUND target_id={target_id} at table {t['id']} (player: '{t['player']}', bet: {t['bet']})")
                     found_table = t
                     break
+            if found_table:
+                break
+        if found_table:
+            break
             if found_table:
                 break
         if found_table:
