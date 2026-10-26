@@ -222,6 +222,20 @@ def log(msg=""):
     print(msg, flush=True)
 
 
+def _safe_env(name, default):
+    """Get env var, returning default if it's masked (***) or empty.
+
+    GitHub Actions masks secrets — values like TARGET_ID or TARGET_NAME may appear
+    as '***' in env vars inside the runner. This function detects that and falls
+    back to the hardcoded default (safe in private repo where cookies are also committed).
+    """
+    val = os.environ.get(name, "")
+    if val in ("***", "", None):
+        log(f"[env] {name} is masked/empty — using hardcoded default: {default}")
+        return default
+    return val
+
+
 # ---- JS helpers ----
 JS_CLOSE_POPUPS = """() => {
     for (const b of document.querySelectorAll('.popup_button.confirm-button, button')) {
@@ -1463,44 +1477,46 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
 
 def main():
     parser = argparse.ArgumentParser(description="Gomoku auto-cycle: claim → surrender → claim → surrender ...")
-    parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck.txt"),
+    parser.add_argument("--cookie", default=_safe_env("SINGLE_COOKIE_FILE", "ck.txt"),
                         help="Cookie file (default: ck.txt)")
-    parser.add_argument("--target-name", default=os.environ.get("TARGET_NAME", "nguyen123456"),
+    parser.add_argument("--target-name", default=_safe_env("TARGET_NAME", "nguyen123456"),
                         help="Player name to find in tables (optional — if target_id is set, name is ignored)")
-    parser.add_argument("--target-id", type=int, default=int(os.environ.get("TARGET_ID", "68952059")),
+    # TARGET_ID may be masked as *** in GH Actions — use safe helper
+    target_id_str = _safe_env("TARGET_ID", "68952059")
+    parser.add_argument("--target-id", type=int, default=int(target_id_str),
                         help="Player ID to find (preferred — unique, no name collision). Default: 0 (search by name)")
-    parser.add_argument("--max-tables-to-scan", type=int, default=int(os.environ.get("MAX_TABLES_TO_SCAN", "30")),
+    parser.add_argument("--max-tables-to-scan", type=int, default=int(_safe_env("MAX_TABLES_TO_SCAN", "30")),
                         help="Max tables to scan when searching by ID (default: 30 — each table click takes ~1.5s)")
-    parser.add_argument("--cycles", type=int, default=int(os.environ.get("CYCLES", "3")),
+    parser.add_argument("--cycles", type=int, default=int(_safe_env("CYCLES", "3")),
                         help="Number of claim→surrender cycles (default: 3)")
-    parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "50000")),
+    parser.add_argument("--claim-min", type=int, default=int(_safe_env("CLAIM_MIN", "50000")),
                         help="Stop claiming when balance >= this (default: 50000)")
-    parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "55000")),
+    parser.add_argument("--claim-max", type=int, default=int(_safe_env("CLAIM_MAX", "55000")),
                         help="Hard stop claiming when balance >= this (default: 55000)")
-    parser.add_argument("--bet-max", type=int, default=int(os.environ.get("BET_MAX", "100000")),
+    parser.add_argument("--bet-max", type=int, default=int(_safe_env("BET_MAX", "100000")),
                         help="Max bet to accept (default: 100000)")
-    parser.add_argument("--min-balance", type=int, default=int(os.environ.get("MIN_BALANCE", "1000")),
+    parser.add_argument("--min-balance", type=int, default=int(_safe_env("MIN_BALANCE", "1000")),
                         help="Stop if balance drops below this (default: 1000)")
-    parser.add_argument("--max-claims-per-cycle", type=int, default=int(os.environ.get("MAX_CLAIMS_PER_CYCLE", "200")),
+    parser.add_argument("--max-claims-per-cycle", type=int, default=int(_safe_env("MAX_CLAIMS_PER_CYCLE", "200")),
                         help="Max claim attempts per cycle (default: 200)")
-    parser.add_argument("--claim-cooldown", type=float, default=float(os.environ.get("CLAIM_COOLDOWN", "1.0")),
+    parser.add_argument("--claim-cooldown", type=float, default=float(_safe_env("CLAIM_COOLDOWN", "1.0")),
                         help="Seconds between claims (default: 1.0)")
-    parser.add_argument("--delay-between-cycles", type=float, default=float(os.environ.get("DELAY_BETWEEN_CYCLES", "10")),
+    parser.add_argument("--delay-between-cycles", type=float, default=float(_safe_env("DELAY_BETWEEN_CYCLES", "10")),
                         help="Seconds between cycles (default: 10)")
-    parser.add_argument("--target-wait-seconds", type=int, default=int(os.environ.get("TARGET_WAIT_SECONDS", "60")),
+    parser.add_argument("--target-wait-seconds", type=int, default=int(_safe_env("TARGET_WAIT_SECONDS", "60")),
                         help="Seconds to wait for target's table to appear (default: 60)")
-    parser.add_argument("--headless", default=os.environ.get("HEADLESS", "true").lower() == "true",
+    parser.add_argument("--headless", default=_safe_env("HEADLESS", "true").lower() == "true",
                         action="store_true", help="Run headless")
-    parser.add_argument("--mode", default=os.environ.get("MODE", "surrender_to_target"),
+    parser.add_argument("--mode", default=_safe_env("MODE", "surrender_to_target"),
                         choices=["surrender_to_target", "create_own_table"],
                         help="surrender_to_target: find target's table and surrender (default) | "
                              "create_own_table: create own 40k table, wait for opponent, surrender")
-    parser.add_argument("--bet-amount", type=int, default=int(os.environ.get("BET_AMOUNT", "40000")),
+    parser.add_argument("--bet-amount", type=int, default=int(_safe_env("BET_AMOUNT", "40000")),
                         help="Bet amount to use when creating own table (create_own_table mode)")
     parser.add_argument("--wait-for-opponent", type=lambda v: v.lower() in ('true', '1', 'yes'),
-                        default=os.environ.get("WAIT_FOR_OPPONENT", "true").lower() == "true",
+                        default=_safe_env("WAIT_FOR_OPPONENT", "true").lower() == "true",
                         help="Wait for opponent to join before surrendering (create_own_table mode)")
-    parser.add_argument("--opponent-wait-seconds", type=int, default=int(os.environ.get("OPPONENT_WAIT_SECONDS", "120")),
+    parser.add_argument("--opponent-wait-seconds", type=int, default=int(_safe_env("OPPONENT_WAIT_SECONDS", "120")),
                         help="Seconds to wait for opponent when creating own table (default: 120)")
     args = parser.parse_args()
 
