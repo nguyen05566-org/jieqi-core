@@ -23,14 +23,14 @@ Usage:
   python3 auto_cycle.py \\
       --cookie ck2.txt \\
       --target-name "nguyen123456" \\
-      --target-id 68639698 \\
+      --target-id 68952059 \\
       --cycles 3 \\
       --claim-min 50000 \\
       --claim-max 55000 \\
       --bet-max 100000
 
   Or via env vars:
-  SINGLE_COOKIE_FILE=ck2.txt TARGET_NAME=nguyen123456 TARGET_ID=68639698 \\
+  SINGLE_COOKIE_FILE=ck2.txt TARGET_NAME=nguyen123456 TARGET_ID=68952059 \\
   CYCLES=3 python3 auto_cycle.py
 """
 import argparse
@@ -858,34 +858,25 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     bal_before, _ = get_balance(game_frame)
     log(f"  balance before: {bal_before:,}")
 
-    # Step 0: Refresh page before looking for target (ensures fresh lobby state)
-    log("  [0] refreshing page before target search...")
+    # Step 0: Navigate to lobby via place.enter() (NO page refresh)
+    log("  [0] place.enter('Lobby') — navigate without refresh...")
     try:
-        page.reload(wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(10000)
-        log("    page refreshed")
+        game_frame.evaluate(JS_GO_LOBBY)
+        time.sleep(3)
+        log("    navigated to lobby via place.enter()")
     except Exception as e:
-        log(f"    [!] page refresh failed: {e}")
+        log(f"    [!] place.enter failed: {e}")
     
-    # Re-find game frame after refresh
-    new_gf = find_game_frame(page, max_wait=60)
+    # Ensure game frame is alive (no reload)
+    new_gf = find_game_frame(page, max_wait=15)
     if new_gf:
         game_frame = new_gf
         game_frame.evaluate(JS_CLOSE_POPUPS)
         time.sleep(2)
-        # Wait for game state to be fully loaded
-        for _ in range(10):
-            try:
-                s = game_frame.evaluate(JS_GET_STATE)
-                if s.get("path") and s.get("playerId"):
-                    break
-            except:
-                pass
-            time.sleep(2)
         bal_before, _ = get_balance(game_frame)
-        log(f"    balance after refresh: {bal_before:,}")
+        log(f"    balance: {bal_before:,}")
     else:
-        log("    [!] no game frame after refresh — using existing")
+        log("    [!] no game frame — using existing")
 
     # Step 1: Navigate to Gomoku lobby (Loby.caro.0) to find target's table
     log("  [0.5] navigating to Loby.caro.0...")
@@ -1005,27 +996,25 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         log(f"  [SKIP] balance {bal_before:,} < min_balance {min_balance:,}")
         return False, 0
     
-    # Step 0: Refresh page before creating table (ensures fresh UI state)
-    log("  [0] refreshing page before table creation...")
+    # Step 0: Navigate to lobby via place.enter() (NO page refresh)
+    log("  [0] place.enter('Lobby') — navigate without refresh...")
     try:
-        page.reload(wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(10000)
-        log("    page refreshed")
+        game_frame.evaluate(JS_GO_LOBBY)
+        time.sleep(3)
+        log("    navigated to lobby via place.enter()")
     except Exception as e:
-        log(f"    [!] page refresh failed: {e}")
+        log(f"    [!] place.enter failed: {e}")
     
-    # Re-find game frame after refresh
-    new_gf = find_game_frame(page, max_wait=60)
+    # Ensure game frame is alive (no reload)
+    new_gf = find_game_frame(page, max_wait=15)
     if new_gf:
         game_frame = new_gf
-        # Close any popups after refresh
         game_frame.evaluate(JS_CLOSE_POPUPS)
         time.sleep(2)
-        # Re-fetch balance
         bal_before, _ = get_balance(game_frame)
-        log(f"    balance after refresh: {bal_before:,}")
+        log(f"    balance: {bal_before:,}")
     else:
-        log("    [!] no game frame after refresh")
+        log("    [!] no game frame")
         return False, 0
     
     # Step 1: Navigate to Gomoku lobby (Loby.caro.0) before creating table
@@ -1421,7 +1410,7 @@ def main():
                         help="Cookie file (default: ck2.txt)")
     parser.add_argument("--target-name", default=os.environ.get("TARGET_NAME", "nguyen123456"),
                         help="Player name to find in tables (optional — if target_id is set, name is ignored)")
-    parser.add_argument("--target-id", type=int, default=int(os.environ.get("TARGET_ID", "68639698")),
+    parser.add_argument("--target-id", type=int, default=int(os.environ.get("TARGET_ID", "68952059")),
                         help="Player ID to find (preferred — unique, no name collision). Default: 0 (search by name)")
     parser.add_argument("--max-tables-to-scan", type=int, default=int(os.environ.get("MAX_TABLES_TO_SCAN", "30")),
                         help="Max tables to scan when searching by ID (default: 30 — each table click takes ~1.5s)")

@@ -33,7 +33,7 @@ Vào https://github.com/nguyen05566-org/jieqi-core/settings/secrets/actions và 
 | Secret name | Value | Ghi chú |
 |---|---|---|
 | `TARGET_NAME` | `nguyen` | Tên player cần SURRENDER cho |
-| `TARGET_ID` | `68639698` | ID nội bộ của target trên gamevh |
+| `TARGET_ID` | `68952059` | ID nội bộ của target trên gamevh |
 
 (Không cần secret cho cookie — file `ck1.txt` đã có trong repo.)
 
@@ -72,7 +72,7 @@ ls ck1.txt
 python3 auto_cycle.py \
     --cookie ck1.txt \
     --target-name "nguyen" \
-    --target-id 68639698 \
+    --target-id 68952059 \
     --cycles 3 \
     --claim-min 50000 \
     --claim-max 55000 \
