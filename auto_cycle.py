@@ -470,17 +470,33 @@ DEFAULT_GOMOKU_LOBBY = "Loby.caro.0"
 
 
 def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attempts=5):
-    """Navigate to a specific lobby path (e.g. 'Loby.caro.0') and wait for it to load."""
+    """Navigate to a specific lobby path (e.g. 'Loby.caro.0') and wait for it to load.
+    
+    On Facebook Gaming, the game URL already goes to the Gomoku lobby directly,
+    so 'Lobby' path is equivalent to 'Loby.caro.0'. This function handles both
+    cases gracefully.
+    """
     log(f"  [nav] navigating to lobby: {lobby_path}")
     for attempt in range(1, max_attempts + 1):
         s = game_frame.evaluate(JS_GET_STATE)
         current_path = s.get("path")
+        # Check if we're already at the target lobby or equivalent (Facebook Gaming shows 'Lobby')
         if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
             log(f"    ✓ already at {current_path}")
+            return True
+        if current_path == "Lobby":
+            # On Facebook Gaming, 'Lobby' is the default lobby (equivalent to Loby.caro.0)
+            log(f"    ✓ at Facebook Gaming Lobby (equivalent to {lobby_path})")
             return True
         log(f"    attempt {attempt}/{max_attempts}: current_path={current_path}")
         r = game_frame.evaluate(JS_ENTER_LOBBY_PATH, lobby_path)
         log(f"    enter result: {r}")
+        if r.get("entered") is False and "not found" in str(r.get("error", "")):
+            # place.enterPlace doesn't exist — likely Facebook Gaming where Lobby is default
+            log(f"    [!] place.enterPlace not available — trying as Lobby")
+            if current_path == "Lobby" or current_path is None:
+                log(f"    ✓ treating current path as lobby")
+                return True
         time.sleep(5)
         # Re-find game frame
         new_gf = find_game_frame(page, max_wait=15)
@@ -490,6 +506,9 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
         current_path = s.get("path")
         if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
             log(f"    ✓ reached {current_path}")
+            return True
+        if current_path == "Lobby":
+            log(f"    ✓ reached Lobby (equivalent to {lobby_path})")
             return True
     return False
 
