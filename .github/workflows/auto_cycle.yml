@@ -13,13 +13,16 @@ on:
       cycles:
         description: 'Số cycle (claim → surrender) mỗi run'
         required: false
-        default: '5'
+        default: '20'
         type: choice
         options:
           - '1'
           - '3'
           - '5'
           - '10'
+          - '20'
+          - '30'
+          - '40'
       claim_min:
         description: 'Ngưỡng dừng claim (xu)'
         required: false
@@ -113,7 +116,7 @@ jobs:
           SINGLE_COOKIE_FILE: 'ck1.txt'
           TARGET_NAME: ${{ secrets.TARGET_NAME }}
           TARGET_ID: ${{ secrets.TARGET_ID }}
-          CYCLES: ${{ inputs.cycles || '5' }}
+          CYCLES: ${{ inputs.cycles || '20' }}
           CLAIM_MIN: ${{ inputs.claim_min || '50000' }}
           CLAIM_MAX: ${{ inputs.claim_max || '55000' }}
           BET_MAX: '100000'
@@ -180,15 +183,17 @@ jobs:
 
       - name: Auto-restart (continuous loop)
         # Auto-trigger lại workflow sau khi hoàn thành để chạy liên tục
-        # Bật `if: always()` nếu muốn chạy liên tục; để `if: false` nếu chỉ chạy theo schedule
-        if: false  # disabled — re-enable by setting back to 'always()'
+        # Mỗi run chạy ~5h (20 cycles × ~15m), cron chạy mỗi 6h
+        if: false  # disabled — auto-restart via cron schedule instead
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           sleep 30
           echo "Triggering next auto_cycle run..."
           gh workflow run auto_cycle.yml --ref "$GITHUB_REF" \
-            -f cycles="${{ inputs.cycles || '5' }}" \
+            -f cycles="${{ inputs.cycles || '20' }}" \
             -f claim_min="${{ inputs.claim_min || '50000' }}" \
             -f claim_max="${{ inputs.claim_max || '55000' }}" \
+            -f mode="${{ inputs.mode || 'surrender_to_target' }}" \
+            -f bet_amount="${{ inputs.bet_amount || '40000' }}" \
             || echo "(restart failed — will retry on next cron)"
