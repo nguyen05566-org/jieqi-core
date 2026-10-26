@@ -398,6 +398,20 @@ JS_GET_TABLE_INFO = """() => ({
     gameText: document.body ? document.body.innerText.slice(0, 300) : '',
 })"""
 
+JS_ENTER_LOBBY_PATH = """(lobbyPath) => {
+    try {
+        if (typeof place !== 'undefined' && typeof place.enterPlace === 'function') {
+            // Gomoku lobby path: "Loby.caro.0"
+            if (typeof place.currentPlace !== 'undefined' && place.currentPlace === lobbyPath) {
+                return {entered: true, already: true};
+            }
+            place.enterPlace(lobbyPath);
+            return {entered: true, already: false};
+        }
+        return {entered: false, error: 'place.enterPlace not found'};
+    } catch(e) { return {entered: false, error: e.toString()}; }
+}"""
+
 JS_FIND_PLAYER_COUNT_IN_TABLE = r"""() => {
     // Look for player count indicators in the game UI
     const text = document.body ? document.body.innerText : '';
@@ -450,6 +464,34 @@ def ensure_in_lobby(game_frame, page, max_attempts=3):
             game_frame = new_gf
     s = game_frame.evaluate(JS_GET_STATE)
     return s.get("path") == "Lobby"
+
+
+DEFAULT_GOMOKU_LOBBY = "Loby.caro.0"
+
+
+def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attempts=5):
+    """Navigate to a specific lobby path (e.g. 'Loby.caro.0') and wait for it to load."""
+    log(f"  [nav] navigating to lobby: {lobby_path}")
+    for attempt in range(1, max_attempts + 1):
+        s = game_frame.evaluate(JS_GET_STATE)
+        current_path = s.get("path")
+        if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
+            log(f"    ✓ already at {current_path}")
+            return True
+        log(f"    attempt {attempt}/{max_attempts}: current_path={current_path}")
+        r = game_frame.evaluate(JS_ENTER_LOBBY_PATH, lobby_path)
+        log(f"    enter result: {r}")
+        time.sleep(5)
+        # Re-find game frame
+        new_gf = find_game_frame(page, max_wait=15)
+        if new_gf:
+            game_frame = new_gf
+        s = game_frame.evaluate(JS_GET_STATE)
+        current_path = s.get("path")
+        if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
+            log(f"    ✓ reached {current_path}")
+            return True
+    return False
 
 
 def trigger_and_claim(game_frame):
@@ -730,6 +772,13 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     else:
         log("    [!] no game frame after refresh — using existing")
 
+    # Step 1: Navigate to Gomoku lobby (Loby.caro.0) to find target's table
+    log("  [0.5] navigating to Loby.caro.0...")
+    if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
+        log("    [!] couldn't reach Gomoku lobby — trying ensure_in_lobby instead")
+        ensure_in_lobby(game_frame, page)
+    open_table_browser(game_frame, page, filter_name="Tất cả")
+
     # Step 1+2: poll for target's table with retry (waits up to target_wait_seconds)
     log(f"  [1+2] looking for target (id={target_id}, name={target_name!r}) up to {target_wait_seconds}s...")
     target = wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max,
@@ -822,7 +871,8 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     """Create own table with specified bet, wait for opponent, then SURRENDER.
     
     Flow:
-      1. Ensure in Lobby
+      0. Refresh page
+      1. Navigate to Loby.caro.0
       2. Open create table panel
       3. Select bet_amount xu
       4. Create table
@@ -863,10 +913,11 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         log("    [!] no game frame after refresh")
         return False, 0
     
-    # Step 1: Ensure in Lobby
-    if not ensure_in_lobby(game_frame, page):
-        log("[!] couldn't return to Lobby")
-        return False, 0
+    # Step 1: Navigate to Gomoku lobby (Loby.caro.0) before creating table
+    log("  [0.5] navigating to Loby.caro.0...")
+    if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
+        log("    [!] couldn't reach Gomoku lobby — trying ensure_in_lobby instead")
+        ensure_in_lobby(game_frame, page)
     
     # Step 2: Open create table panel
     log("  [1] opening create table panel...")
