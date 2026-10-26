@@ -361,6 +361,54 @@ JS_GO_LOBBY = """() => {
     } catch(e) { return 'err: ' + e.toString(); }
 }"""
 
+# === Create table + wait for opponent (reverse surrender) ===
+
+JS_SELECT_BET_BY_VALUE = """(betValue) => {
+    // Select radio button by displayed value (e.g., 40000, 10000, etc.)
+    const betValueStr = String(betValue);
+    let radio = null;
+    // Try matching by value attribute
+    const radios = document.querySelectorAll('input[type="radio"]');
+    for (const r of radios) {
+        const val = (r.value || '').toString();
+        if (val === betValueStr || val.replace(/[^\\d]/g, '') === betValueStr) {
+            radio = r; break;
+        }
+    }
+    // Try matching by nearby label text
+    if (!radio) {
+        for (const r of radios) {
+            const label = r.closest('label') || document.querySelector('label[for=\"' + r.id + '\"]');
+            if (label && label.innerText.includes(betValueStr)) { radio = r; break; }
+        }
+    }
+    if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change', {bubbles:true})); return {found: true, id: radio.id}; }
+    return {found: false};
+}"""
+
+JS_GET_TABLE_INFO = """() => ({
+    playerCount: document.querySelectorAll('.player-cell, .seat-player, [class*="player"]').length,
+    seatInfo: (() => {
+        const seats = [];
+        document.querySelectorAll('.seat, .player-slot, [class*="seat"]').forEach(s => {
+            seats.push({text: (s.innerText || '').trim(), visible: s.offsetParent !== null});
+        });
+        return seats;
+    })(),
+    gameText: document.body ? document.body.innerText.slice(0, 300) : '',
+})"""
+
+JS_FIND_PLAYER_COUNT_IN_TABLE = r"""() => {
+    // Look for player count indicators in the game UI
+    const text = document.body ? document.body.innerText : '';
+    // Gomoku typically shows player count like "1/2 players" or similar
+    const m = text.match(/(\d+)\s*[/\u2044]\s*2/);
+    if (m) { return {count: parseInt(m[1]), text: m[0]}; }
+    // Also check for seat elements
+    const occupied = document.querySelectorAll('.seat-occupied, [class*="seat"][class*="occupied"], .player-cell').length;
+    return {count: occupied, text: 'unknown', method: 'seat'};
+}"""
+
 
 def find_game_frame(page, max_wait=60):
     deadline = time.time() + max_wait
@@ -749,6 +797,116 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     return surrender_ok, max(0, -delta)
 
 
+def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_opponent=True, 
+                                    opponent_wait_seconds=120, min_balance=1000):
+    """Create own table with specified bet, wait for opponent, then SURRENDER.
+    
+    Flow:
+      1. Ensure in Lobby
+      2. Open create table panel
+      3. Select bet_amount xu
+      4. Create table
+      5. Wait for opponent to join (if wait_for_opponent)
+      6. Start game + SURRENDER
+    
+    Returns (success, balance_lost).
+    """
+    log(f"\n[SURRENDER_SELF] creating table with {bet_amount:,} xu bet...")
+    
+    bal_before, _ = get_balance(game_frame)
+    log(f"  balance before: {bal_before:,}")
+    
+    if bal_before < min_balance:
+        log(f"  [SKIP] balance {bal_before:,} < min_balance {min_balance:,}")
+        return False, 0
+    
+    # Step 1: Ensure in Lobby
+    if not ensure_in_lobby(game_frame, page):
+        log("[!] couldn't return to Lobby")
+        return False, 0
+    
+    # Step 2: Open create table panel
+    log("  [1] opening create table panel...")
+    game_frame.evaluate(JS_CREATE_TABLE)
+    time.sleep(2)
+    
+    # Step 3: Select bet amount
+    log(f"  [2] selecting bet: {bet_amount:,} xu")
+    r = game_frame.evaluate(JS_SELECT_BET_BY_VALUE, bet_amount)
+    log(f"    result: {r}")
+    if not r.get("found"):
+        log(f"    [!] bet {bet_amount:,} not found, trying radio_11 fallback")
+        game_frame.evaluate(JS_SELECT_RADIO_11)
+    time.sleep(0.5)
+    
+    # Step 4: Create table
+    log("  [3] clicking CREATE...")
+    game_frame.evaluate(JS_CLICK_CREATE)
+    time.sleep(5)
+    
+    # Step 5: Wait for opponent (if requested)
+    if wait_for_opponent:
+        log(f"  [4] waiting for opponent (up to {opponent_wait_seconds}s)...")
+        deadline = time.time() + opponent_wait_seconds
+        while time.time() < deadline:
+            # Check if game has started (opponent joined + started)
+            table_info = game_frame.evaluate(JS_GET_TABLE_INFO)
+            log(f"    table_info: {table_info}")
+            
+            # Check player count
+            player_count = game_frame.evaluate(JS_FIND_PLAYER_COUNT_IN_TABLE)
+            log(f"    player_count: {player_count}")
+            
+            # If player count is 2+, opponent has joined
+            count = player_count.get("count", 0)
+            if count >= 2:
+                log(f"    ✓ opponent joined ({count} players)")
+                break
+            
+            time.sleep(5)
+        else:
+            log("    [!] no opponent joined within timeout")
+            # Try to start game anyway if auto-start is available
+    
+    # Step 6: Check if game started, then surrender
+    # Click Bắt đầu if available
+    log("  [5] looking for Bắt đầu button...")
+    for i in range(10):
+        r = game_frame.evaluate(JS_FIND_BAT_DAU)
+        if r.get("found"):
+            log(f"    ✓ Bắt đầu found (text: {r.get('text')})")
+            game_frame.evaluate(JS_CLICK_BAT_DAU)
+            time.sleep(5)
+            break
+        time.sleep(2)
+    
+    # Send SURRENDER
+    log("  [6] sending SURRENDER...")
+    r = game_frame.evaluate(JS_SEND_SURRENDER)
+    log(f"    result: {r}")
+    surrender_ok = r.get("ok", False) or r.get("err_code") == 22
+    
+    # Close dialogs
+    log("  [7] closing dialog + returning to lobby...")
+    time.sleep(3)
+    for _ in range(5):
+        clicked = game_frame.evaluate(JS_CLICK_OK)
+        if clicked.get("clicked"):
+            time.sleep(1)
+            break
+        time.sleep(1)
+    
+    ensure_in_lobby(game_frame, page)
+    
+    # Final balance
+    bal_after, _ = get_balance(game_frame)
+    delta = bal_after - bal_before
+    log(f"  [done] balance: {bal_before:,} → {bal_after:,} (Δ={delta:+,})")
+    if delta < 0:
+        log(f"         ✓ lost {-delta:,} xu (transferred to opponent)")
+    return surrender_ok, max(0, -delta)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Gomoku auto-cycle: claim → surrender → claim → surrender ...")
     parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck.txt"),
@@ -779,6 +937,17 @@ def main():
                         help="Seconds to wait for target's table to appear (default: 60)")
     parser.add_argument("--headless", default=os.environ.get("HEADLESS", "true").lower() == "true",
                         action="store_true", help="Run headless")
+    parser.add_argument("--mode", default=os.environ.get("MODE", "surrender_to_target"),
+                        choices=["surrender_to_target", "create_own_table"],
+                        help="surrender_to_target: find target's table and surrender (default) | "
+                             "create_own_table: create own 40k table, wait for opponent, surrender")
+    parser.add_argument("--bet-amount", type=int, default=int(os.environ.get("BET_AMOUNT", "40000")),
+                        help="Bet amount to use when creating own table (create_own_table mode)")
+    parser.add_argument("--wait-for-opponent", type=lambda v: v.lower() in ('true', '1', 'yes'),
+                        default=os.environ.get("WAIT_FOR_OPPONENT", "true").lower() == "true",
+                        help="Wait for opponent to join before surrendering (create_own_table mode)")
+    parser.add_argument("--opponent-wait-seconds", type=int, default=int(os.environ.get("OPPONENT_WAIT_SECONDS", "120")),
+                        help="Seconds to wait for opponent when creating own table (default: 120)")
     args = parser.parse_args()
 
     cookie_path = args.cookie
@@ -796,7 +965,7 @@ def main():
     log(f"[fp] UA={fp['user_agent'][:50]}... viewport={fp['viewport']}")
     log(f"[config] target='{args.target_name}' (id={args.target_id})")
     log(f"         claim_min={args.claim_min:,}, claim_max={args.claim_max:,}")
-    log(f"         bet_max={args.bet_max:,}, cycles={args.cycles}")
+    log(f"         bet_max={args.bet_max:,}, cycles={args.cycles}, mode={args.mode}")
 
     cycle_results = []
     total_xu_to_target = 0
@@ -876,10 +1045,34 @@ def main():
                     break
 
             # PHASE 2: SURRENDER
-            log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
-            ok, lost = surrender_one_round(game_frame, page, args.target_name, args.target_id, args.bet_max,
-                                           target_wait_seconds=args.target_wait_seconds,
-                                           max_tables_to_scan=args.max_tables_to_scan)
+            if args.mode == "create_own_table":
+                # Create own table with specified bet, wait for opponent, surrender
+                bet_amount = args.bet_amount
+                # Check balance is sufficient for bet
+                if final_bal < bet_amount:
+                    log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu) ===")
+                    log(f"  [SKIP] balance {final_bal:,} < bet {bet_amount:,} — not enough funds")
+                    cycle_results.append({
+                        "cycle": cycle_num,
+                        "balance_after_claim": final_bal,
+                        "surrender_ok": False,
+                        "xu_lost": 0,
+                    })
+                    continue
+                log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
+                ok, lost = create_own_table_and_surrender(
+                    game_frame, page, bet_amount=bet_amount,
+                    wait_for_opponent=args.wait_for_opponent,
+                    opponent_wait_seconds=args.opponent_wait_seconds,
+                    min_balance=args.min_balance,
+                )
+                target_label = "self-created table"
+            else:
+                log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
+                ok, lost = surrender_one_round(game_frame, page, args.target_name, args.target_id, args.bet_max,
+                                               target_wait_seconds=args.target_wait_seconds,
+                                               max_tables_to_scan=args.max_tables_to_scan)
+                target_label = f"target '{args.target_name}' (id={args.target_id})"
             total_xu_to_target += lost
             cycle_results.append({
                 "cycle": cycle_num,
@@ -887,7 +1080,7 @@ def main():
                 "surrender_ok": ok,
                 "xu_lost": lost,
             })
-            log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | total to target: {total_xu_to_target:,}")
+            log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target:,}")
 
             if cycle_num < args.cycles:
                 wait = args.delay_between_cycles + random.uniform(0, 3)
@@ -922,8 +1115,11 @@ def main():
         log(f"  Cycle {c['cycle']}: balance_after_claim={c['balance_after_claim']:,}, "
             f"surrender={marker}, lost={c['xu_lost']:,}")
     log(f"\nFinal balance: {bal_final:,} xu")
-    log(f"Total xu sent to '{args.target_name}': {total_xu_to_target:,} xu")
-    log(f"Total cycles completed: {len(cycle_results)}/{args.cycles}")
+    if args.mode == "create_own_table":
+        log(f"Total cycles completed: {len(cycle_results)}/{args.cycles}")
+    else:
+        log(f"Total xu sent to '{args.target_name}': {total_xu_to_target:,} xu")
+        log(f"Total cycles completed: {len(cycle_results)}/{args.cycles}")
     return 0 if cycle_results else 1
 
 
