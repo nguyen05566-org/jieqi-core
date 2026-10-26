@@ -166,11 +166,9 @@ JS_CLICK_CREATE = """() => {
 
 # Gomoku UI navigation (for surrender phase)
 JS_CLICK_CHON_BAN = """() => {
-    const vietnamese = ['Chọn bàn'];
-    const english = ['Find Table', 'Select Table', 'Choose Table'];
-    const keywords = vietnamese.concat(english);
-    for (const b of document.querySelectorAll('a, button')) {
-        const t = (b.innerText || '').trim();
+    const keywords = ['chọn bàn', 'find table', 'select table', 'choose table', 'find tables'];
+    for (const b of document.querySelectorAll('a, button, [role="button"], span, div')) {
+        const t = (b.innerText || '').trim().toLowerCase();
         if (keywords.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
     }
     return false;
@@ -178,9 +176,9 @@ JS_CLICK_CHON_BAN = """() => {
 
 JS_CLICK_FILTER_TAT_CA = """() => {
     // "Tất cả" (Vietnamese) / "All" (English)
-    const texts = ['Tất cả', 'All'];
+    const texts = ['tất cả', 'all'];
     for (const b of document.querySelectorAll('a, button')) {
-        const t = (b.innerText || '').trim();
+        const t = (b.innerText || '').trim().toLowerCase();
         if (texts.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
     }
     // Fallback: filter buttons by id (original approach)
@@ -191,9 +189,9 @@ JS_CLICK_FILTER_TAT_CA = """() => {
 
 JS_CLICK_FILTER_CON_TRONG = """() => {
     // "Còn trống" (Vietnamese) / "Available" (English)
-    const texts = ['Còn trống', 'Available', 'Open Seats'];
+    const texts = ['còn trống', 'available', 'open seats'];
     for (const b of document.querySelectorAll('a, button')) {
-        const t = (b.innerText || '').trim();
+        const t = (b.innerText || '').trim().toLowerCase();
         if (texts.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
     }
     // Fallback: filter buttons by id (original approach)
@@ -379,9 +377,11 @@ JS_CLICK_OK = """() => {
 
 JS_GO_LOBBY = """() => {
     try {
+        if (typeof place.enter === 'function') { place.enter('Lobby'); return 'enter:Lobby'; }
+        if (typeof place.enterPlace === 'function') { place.enterPlace('Lobby'); return 'enterPlace:Lobby'; }
         if (typeof place.enterParent === 'function') { place.enterParent(); return 'enterParent'; }
         if (typeof place.leaveTable === 'function') { place.leaveTable(); return 'leaveTable'; }
-        return 'no leave function';
+        return 'no leave/enter function';
     } catch(e) { return 'err: ' + e.toString(); }
 }"""
 
@@ -730,7 +730,7 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
         game_frame.evaluate(JS_CLEAR_TAP)
         # Click this table
         game_frame.evaluate(JS_CLICK_TABLE, t["id"])
-        time.sleep(1.0)  # wait for PLAYER_ENTERED to arrive
+        time.sleep(2.0)  # wait for PLAYER_ENTERED to arrive
         # Check tap messages for target_id
         tap = game_frame.evaluate(JS_GET_TAP)
         for msg in tap:
@@ -864,13 +864,13 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     log("  [0] place.enter('Lobby') — navigate without refresh...")
     try:
         game_frame.evaluate(JS_GO_LOBBY)
-        time.sleep(3)
+        time.sleep(8)
         log("    navigated to lobby via place.enter()")
     except Exception as e:
         log(f"    [!] place.enter failed: {e}")
     
-    # Ensure game frame is alive (no reload)
-    new_gf = find_game_frame(page, max_wait=15)
+    # Ensure game frame is alive (no reload) — wait longer for frame to reappear
+    new_gf = find_game_frame(page, max_wait=30)
     if new_gf:
         game_frame = new_gf
         game_frame.evaluate(JS_CLOSE_POPUPS)
@@ -878,7 +878,8 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
         bal_before, _ = get_balance(game_frame)
         log(f"    balance: {bal_before:,}")
     else:
-        log("    [!] no game frame — using existing")
+        log("    [!] no game frame — attempting ensure_in_lobby")
+        ensure_in_lobby(game_frame, page)
 
     # Step 1: Navigate to Gomoku lobby (Loby.caro.0) to find target's table
     log("  [0.5] navigating to Loby.caro.0...")
@@ -1002,13 +1003,13 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     log("  [0] place.enter('Lobby') — navigate without refresh...")
     try:
         game_frame.evaluate(JS_GO_LOBBY)
-        time.sleep(3)
+        time.sleep(8)
         log("    navigated to lobby via place.enter()")
     except Exception as e:
         log(f"    [!] place.enter failed: {e}")
     
-    # Ensure game frame is alive (no reload)
-    new_gf = find_game_frame(page, max_wait=15)
+    # Ensure game frame is alive (no reload) — wait longer for frame to reappear
+    new_gf = find_game_frame(page, max_wait=30)
     if new_gf:
         game_frame = new_gf
         game_frame.evaluate(JS_CLOSE_POPUPS)
