@@ -1201,26 +1201,43 @@ def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
     })
     log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target:,}")
 
-    if cycle_num < args.cycles:
-        wait = args.delay_between_cycles + random.uniform(0, 3)
-        log(f"\n  sleeping {wait:.1f}s before next cycle...")
-        time.sleep(wait)
-        # Re-find game frame
-        new_gf = find_game_frame(page, max_wait=10)
-        if new_gf:
-            game_frame = new_gf
-        else:
-            log(f"  [reload] game frame gone — reloading")
-            try:
-                page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(15000)
-                game_frame = find_game_frame(page, max_wait=60)
-                if not game_frame:
-                    log("  [!] no game frame after reload — stopping")
-                    raise StopCycle
-            except Exception as e:
-                log(f"  [!] reload failed: {e}")
-                raise StopCycle
+    # Re-find game frame for status reporting
+    new_gf = find_game_frame(page, max_wait=10)
+    if new_gf:
+        game_frame = new_gf
+    return game_frame
+
+
+def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
+    """Close and relaunch browser + context to prevent crashes.
+    Returns (browser, ctx, page, game_frame)."""
+    log("  [restart] closing browser context to prevent crash accumulation...")
+    try:
+        ctx.close()
+    except: pass
+    try:
+        browser.close()
+    except: pass
+    browser = p.chromium.launch(headless=headless, args=al.stealth_launch_args(fp))
+    ctx = browser.new_context(
+        viewport=fp["viewport"], locale=fp["locale"],
+        user_agent=fp["user_agent"], timezone_id=fp["timezone"],
+        color_scheme=fp.get("color_scheme", "light"),
+    )
+    ctx.add_init_script(al.build_stealth_js(fp))
+    ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
+    page = ctx.new_page()
+    page.set_default_timeout(45000)
+    page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
+    page.wait_for_timeout(5000)
+    page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(20000)
+    game_frame = find_game_frame(page, max_wait=60)
+    if game_frame:
+        log("  [restart] ✓ browser restarted, game frame ready")
+    else:
+        log("  [restart] ✗ no game frame after restart")
+    return browser, ctx, page, game_frame
 
 
 def main():
@@ -1330,10 +1347,22 @@ def main():
             log(f"# CYCLE {cycle_num}/{args.cycles}")
             log(f"{'#' * 60}")
 
+            # Proactive browser restart between cycles to prevent crash accumulation
+            if cycle_num > 1:
+                browser, ctx, page, game_frame = restart_browser(
+                    page, browser, p, cookies, fp, ctx, headless=args.headless
+                )
+                if not game_frame:
+                    log("[!] failed to restart browser — stopping")
+                    break
+
             # Catch browser crashes / page closed errors
+            result = None
             try:
-                _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results, 
+                result = _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results, 
                            total_xu_to_target, cookies, fp, ctx)
+                if result:
+                    game_frame = result  # Update with refreshed game frame
             except StopCycle:
                 log(f"  [STOP] cycle stopped early")
                 continue
