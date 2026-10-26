@@ -443,8 +443,22 @@ def find_game_frame(page, max_wait=60):
 
 
 def get_balance(game_frame):
-    s = game_frame.evaluate(JS_GET_STATE)
-    return parse_bet(s.get("balance")), s
+    try:
+        s = game_frame.evaluate(JS_GET_STATE)
+        return parse_bet(s.get("balance")), s
+    except Exception as e:
+        log(f"  [warn] get_balance failed: {type(e).__name__}")
+        return 0, {"path": None}
+
+
+def is_browser_alive(page):
+    """Check if the browser/page is still alive."""
+    try:
+        if page and page.is_closed():
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def ensure_in_lobby(game_frame, page, max_attempts=3):
@@ -1034,6 +1048,112 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     return surrender_ok, max(0, -delta)
 
 
+class StopCycle(Exception):
+    """Raise to stop the current cycle but continue to next iteration."""
+    pass
+
+
+def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
+               total_xu_to_target, cookies, fp, ctx):
+    """Execute one claim → surrender cycle. Called from main() with error handling."""
+    # Check min balance
+    bal, _ = get_balance(game_frame)
+    if bal < args.min_balance:
+        log(f"[STOP] balance {bal:,} < min {args.min_balance:,}")
+        raise StopCycle
+    
+    # Ensure we're in Lobby
+    if not ensure_in_lobby(game_frame, page):
+        log("[!] couldn't return to Lobby — reloading game")
+        try:
+            page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(15000)
+            game_frame = find_game_frame(page, max_wait=60)
+            if not game_frame:
+                log("[!] no game frame after reload — stopping")
+                raise StopCycle
+        except Exception as e:
+            log(f"[!] reload failed: {e}")
+            raise StopCycle
+
+    # PHASE 1: CLAIM until [claim_min, claim_max]
+    log(f"\n=== Phase 1: CLAIM (target balance: [{args.claim_min:,}, {args.claim_max:,}]) ===")
+    final_bal, n_ok, n_fail, server_rej = claim_until_threshold(
+        game_frame, page, args.claim_min, args.claim_max,
+        max_claims=args.max_claims_per_cycle,
+        cooldown=args.claim_cooldown,
+    )
+
+    if final_bal < args.claim_min and not server_rej:
+        log(f"\n[!] couldn't reach {args.claim_min:,} xu — claim exhausted")
+        log(f"    current balance: {final_bal:,}")
+        if final_bal >= args.bet_max // 4:
+            log(f"    proceeding to surrender attempt anyway")
+        else:
+            log(f"    [STOP] balance too low")
+            raise StopCycle
+
+    # PHASE 2: SURRENDER
+    if args.mode == "create_own_table":
+        bet_amount = args.bet_amount
+        if final_bal < bet_amount:
+            log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu) ===")
+            log(f"  [SKIP] balance {final_bal:,} < bet {bet_amount:,} — not enough funds")
+            cycle_results.append({
+                "cycle": cycle_num,
+                "balance_after_claim": final_bal,
+                "surrender_ok": False,
+                "xu_lost": 0,
+            })
+            if cycle_num < args.cycles:
+                time.sleep(args.delay_between_cycles)
+            return
+        log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
+        ok, lost = create_own_table_and_surrender(
+            game_frame, page, bet_amount=bet_amount,
+            wait_for_opponent=args.wait_for_opponent,
+            opponent_wait_seconds=args.opponent_wait_seconds,
+            min_balance=args.min_balance,
+        )
+        target_label = "self-created table"
+    else:
+        log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
+        ok, lost = surrender_one_round(game_frame, page, args.target_name, args.target_id, args.bet_max,
+                                       target_wait_seconds=args.target_wait_seconds,
+                                       max_tables_to_scan=args.max_tables_to_scan)
+        target_label = f"target '{args.target_name}' (id={args.target_id})"
+
+    total_xu_to_target += lost
+    cycle_results.append({
+        "cycle": cycle_num,
+        "balance_after_claim": final_bal,
+        "surrender_ok": ok,
+        "xu_lost": lost,
+    })
+    log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target:,}")
+
+    if cycle_num < args.cycles:
+        wait = args.delay_between_cycles + random.uniform(0, 3)
+        log(f"\n  sleeping {wait:.1f}s before next cycle...")
+        time.sleep(wait)
+        # Re-find game frame
+        new_gf = find_game_frame(page, max_wait=10)
+        if new_gf:
+            game_frame = new_gf
+        else:
+            log(f"  [reload] game frame gone — reloading")
+            try:
+                page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(15000)
+                game_frame = find_game_frame(page, max_wait=60)
+                if not game_frame:
+                    log("  [!] no game frame after reload — stopping")
+                    raise StopCycle
+            except Exception as e:
+                log(f"  [!] reload failed: {e}")
+                raise StopCycle
+
+
 def main():
     parser = argparse.ArgumentParser(description="Gomoku auto-cycle: claim → surrender → claim → surrender ...")
     parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck.txt"),
@@ -1133,106 +1253,59 @@ def main():
             log(f"# CYCLE {cycle_num}/{args.cycles}")
             log(f"{'#' * 60}")
 
-            # Check min balance
-            bal, _ = get_balance(game_frame)
-            if bal < args.min_balance:
-                log(f"[STOP] balance {bal:,} < min {args.min_balance:,}")
-                break
-
-            # Ensure we're in Lobby
-            if not ensure_in_lobby(game_frame, page):
-                log("[!] couldn't return to Lobby — reloading game")
-                try:
-                    page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
-                    page.wait_for_timeout(15000)
-                    game_frame = find_game_frame(page, max_wait=60)
-                    if not game_frame:
-                        log("[!] no game frame after reload — stopping")
-                        break
-                except Exception as e:
-                    log(f"[!] reload failed: {e}")
-                    break
-
-            # PHASE 1: CLAIM until [claim_min, claim_max]
-            log(f"\n=== Phase 1: CLAIM (target balance: [{args.claim_min:,}, {args.claim_max:,}]) ===")
-            final_bal, n_ok, n_fail, server_rej = claim_until_threshold(
-                game_frame, page, args.claim_min, args.claim_max,
-                max_claims=args.max_claims_per_cycle,
-                cooldown=args.claim_cooldown,
-            )
-
-            if final_bal < args.claim_min and not server_rej:
-                log(f"\n[!] couldn't reach {args.claim_min:,} xu — claim exhausted")
-                log(f"    current balance: {final_bal:,}")
-                # Try surrender anyway if balance > bet_max/2
-                if final_bal >= args.bet_max // 4:
-                    log(f"    proceeding to surrender attempt anyway")
-                else:
-                    log(f"    [STOP] balance too low")
-                    break
-
-            # PHASE 2: SURRENDER
-            if args.mode == "create_own_table":
-                # Create own table with specified bet, wait for opponent, surrender
-                bet_amount = args.bet_amount
-                # Check balance is sufficient for bet
-                if final_bal < bet_amount:
-                    log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu) ===")
-                    log(f"  [SKIP] balance {final_bal:,} < bet {bet_amount:,} — not enough funds")
-                    cycle_results.append({
-                        "cycle": cycle_num,
-                        "balance_after_claim": final_bal,
-                        "surrender_ok": False,
-                        "xu_lost": 0,
-                    })
-                    continue
-                log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
-                ok, lost = create_own_table_and_surrender(
-                    game_frame, page, bet_amount=bet_amount,
-                    wait_for_opponent=args.wait_for_opponent,
-                    opponent_wait_seconds=args.opponent_wait_seconds,
-                    min_balance=args.min_balance,
-                )
-                target_label = "self-created table"
-            else:
-                log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
-                ok, lost = surrender_one_round(game_frame, page, args.target_name, args.target_id, args.bet_max,
-                                               target_wait_seconds=args.target_wait_seconds,
-                                               max_tables_to_scan=args.max_tables_to_scan)
-                target_label = f"target '{args.target_name}' (id={args.target_id})"
-            total_xu_to_target += lost
-            cycle_results.append({
-                "cycle": cycle_num,
-                "balance_after_claim": final_bal,
-                "surrender_ok": ok,
-                "xu_lost": lost,
-            })
-            log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target:,}")
-
-            if cycle_num < args.cycles:
-                wait = args.delay_between_cycles + random.uniform(0, 3)
-                log(f"\n  sleeping {wait:.1f}s before next cycle...")
-                time.sleep(wait)
-                # Re-find game frame
-                new_gf = find_game_frame(page, max_wait=10)
-                if new_gf:
-                    game_frame = new_gf
-                else:
-                    log(f"  [reload] game frame gone — reloading")
+            # Catch browser crashes / page closed errors
+            try:
+                _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results, 
+                           total_xu_to_target, cookies, fp, ctx)
+            except StopCycle:
+                log(f"  [STOP] cycle stopped early")
+                continue
+            except Exception as e:
+                err_type = type(e).__name__
+                log(f"\n[ERROR] Cycle {cycle_num} failed: {err_type}: {e}")
+                if err_type in ('TargetClosedError', 'Browser closed', 'Page closed'):
+                    log("  Browser closed — attempting relaunch...")
                     try:
+                        browser.close()
+                    except: pass
+                    try:
+                        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
+                        ctx = browser.new_context(
+                            viewport=fp["viewport"], locale=fp["locale"],
+                            user_agent=fp["user_agent"], timezone_id=fp["timezone"],
+                            color_scheme=fp.get("color_scheme", "light"),
+                        )
+                        ctx.add_init_script(al.build_stealth_js(fp))
+                        ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
+                        page = ctx.new_page()
+                        page.set_default_timeout(45000)
+                        page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
+                        page.wait_for_timeout(5000)
                         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
-                        page.wait_for_timeout(15000)
+                        page.wait_for_timeout(20000)
                         game_frame = find_game_frame(page, max_wait=60)
-                        if not game_frame:
-                            log("  [!] no game frame after reload — stopping")
+                        if game_frame:
+                            log("  ✓ browser relaunched, game frame ready")
+                        else:
+                            log("  ✗ failed to find game frame after relaunch")
                             break
-                    except Exception as e:
-                        log(f"  [!] reload failed: {e}")
+                    except Exception as e2:
+                        log(f"  ✗ relaunch failed: {e2}")
                         break
+                else:
+                    log(f"  Non-fatal error — continuing to next cycle")
+                continue
 
         # Final summary
-        bal_final, _ = get_balance(game_frame)
-        browser.close()
+        try:
+            bal_final, _ = get_balance(game_frame)
+        except Exception:
+            log("[WARN] couldn't get final balance — browser may have crashed")
+            bal_final = final_bal if cycle_results else 0
+        try:
+            browser.close()
+        except Exception:
+            pass
 
     log(f"\n{'=' * 60}")
     log(f"FINAL SUMMARY")
