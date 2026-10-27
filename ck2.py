@@ -23,14 +23,14 @@ Usage:
   python3 auto_cycle.py \\
       --cookie ck2.txt \\
       --target-name "nguyen123456" \\
-      --target-id 68952059 \\
+      --target-id 68639698 \\
       --cycles 3 \\
       --claim-min 50000 \\
       --claim-max 55000 \\
       --bet-max 100000
 
   Or via env vars:
-  SINGLE_COOKIE_FILE=ck2.txt TARGET_NAME=nguyen123456 TARGET_ID=68952059 \\
+  SINGLE_COOKIE_FILE=ck2.txt TARGET_NAME=nguyen123456 TARGET_ID=68639698 \\
   CYCLES=3 python3 auto_cycle.py
 """
 import argparse
@@ -40,8 +40,10 @@ import sys
 import time
 import random
 import json
-import hashlib
 import subprocess
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import anti_lock as al
 
 from playwright.sync_api import sync_playwright
 
@@ -78,20 +80,6 @@ def parse_bet(s):
 
 def log(msg=""):
     print(msg, flush=True)
-
-
-def _safe_env(name, default):
-    """Get env var, returning default if it's masked (***) or empty.
-    
-    GitHub Actions masks secrets — values like TARGET_ID or TARGET_NAME may appear
-    as '***' in env vars inside the runner. This function detects that and falls
-    back to the hardcoded default (safe in private repo where cookies are also committed).
-    """
-    val = os.environ.get(name, "")
-    if val in ("***", "", None):
-        log(f"[env] {name} is masked/empty — using hardcoded default: {default}")
-        return default
-    return val
 
 
 # ---- JS helpers ----
@@ -178,9 +166,11 @@ JS_CLICK_CREATE = """() => {
 
 # Gomoku UI navigation (for surrender phase)
 JS_CLICK_CHON_BAN = """() => {
-    const keywords = ['chọn bàn', 'find table', 'select table', 'choose table', 'find tables'];
-    for (const b of document.querySelectorAll('a, button, [role="button"], span, div')) {
-        const t = (b.innerText || '').trim().toLowerCase();
+    const vietnamese = ['Chọn bàn'];
+    const english = ['Find Table', 'Select Table', 'Choose Table'];
+    const keywords = vietnamese.concat(english);
+    for (const b of document.querySelectorAll('a, button')) {
+        const t = (b.innerText || '').trim();
         if (keywords.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
     }
     return false;
@@ -188,9 +178,9 @@ JS_CLICK_CHON_BAN = """() => {
 
 JS_CLICK_FILTER_TAT_CA = """() => {
     // "Tất cả" (Vietnamese) / "All" (English)
-    const texts = ['tất cả', 'all'];
+    const texts = ['Tất cả', 'All'];
     for (const b of document.querySelectorAll('a, button')) {
-        const t = (b.innerText || '').trim().toLowerCase();
+        const t = (b.innerText || '').trim();
         if (texts.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
     }
     // Fallback: filter buttons by id (original approach)
@@ -201,9 +191,9 @@ JS_CLICK_FILTER_TAT_CA = """() => {
 
 JS_CLICK_FILTER_CON_TRONG = """() => {
     // "Còn trống" (Vietnamese) / "Available" (English)
-    const texts = ['còn trống', 'available', 'open seats'];
+    const texts = ['Còn trống', 'Available', 'Open Seats'];
     for (const b of document.querySelectorAll('a, button')) {
-        const t = (b.innerText || '').trim().toLowerCase();
+        const t = (b.innerText || '').trim();
         if (texts.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
     }
     // Fallback: filter buttons by id (original approach)
@@ -261,15 +251,10 @@ JS_GET_VISIBLE_PROFILES = """() => {
 # containing player_ids of all players in that table. We tap WS messages and
 # search for target_id in the binary data — no DOM parsing needed.
 
-# PLAYER_ENTERED command code: bytes [0,1] = [0x01, 0x9E]
-# The message structure is: [cmd_hi, cmd_lo, ...payload...]
-# We filter in JS to only store PLAYER_ENTERED messages, reducing Python-side search time.
-
 JS_INSTALL_WS_TAP = """() => {
     if (window.__tap_installed) return true;
     window.__tap = [];
     window.__last_tap_count = 0;
-    window.__tap_diag = [];  // diagnostic: all messages with cmd code
     const ws = window.connection && window.connection.ws;
     if (!ws) return false;
     const orig = ws.onmessage;
@@ -280,16 +265,7 @@ JS_INSTALL_WS_TAP = """() => {
             if (ev.data instanceof ArrayBuffer) bytes = Array.from(new Uint8Array(ev.data));
             else if (ev.data && ev.data.data) bytes = Array.from(new Uint8Array(ev.data.data));
         } catch(e) {}
-        if (!bytes || bytes.length === 0) return;
-        // Extract 2-byte command code from first two bytes
-        const cmdCode = (bytes[0] << 8) | bytes[1];
-        // Store diagnostic for ALL messages (small overhead, useful for debugging)
-        const hexBytes = bytes.slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join(' ');
-        window.__tap_diag.push({ts: Date.now(), cmd: cmdCode, len: bytes.length, hex: hexBytes});
-        // Only store PLAYER_ENTERED (0x019E) messages for target search
-        if (cmdCode === 0x019E) {
-            window.__tap.push({ts: Date.now(), bytes});
-        }
+        if (bytes) window.__tap.push({ts: Date.now(), bytes});
         if (orig) return orig.call(ws, ev);
     };
     window.__tap_installed = true;
@@ -299,9 +275,6 @@ JS_INSTALL_WS_TAP = """() => {
 JS_CLEAR_TAP = "() => { window.__tap = []; window.__last_tap_count = 0; return true; }"
 
 JS_GET_TAP = "() => window.__tap || []"
-
-# Diagnostic: dump captured WS messages (command codes + hex of first 16 bytes)
-JS_GET_TAP_DIAG = "() => window.__tap_diag || []"
 
 # Scan ALL tables (id, bet, player_name) without name filter
 JS_SCAN_ALL_TABLES = """() => {
@@ -343,23 +316,21 @@ JS_CLICK_VAO_CHOI = """() => {
 }"""
 
 JS_FIND_BAT_DAU = """() => {
-    const keywords = ['bắt đầu', 'start', 'play', 'begin'];
     for (const b of document.querySelectorAll('button, input[type=button], [role=button], a')) {
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
-        const t = (b.innerText || b.textContent || b.value || '').trim().toLowerCase();
-        if (keywords.some(k => t.includes(k))) return {found: true, text: t};
+        const t = (b.innerText || b.textContent || b.value || '').trim();
+        if (t.includes('Bắt đầu')) return {found: true, text: t};
     }
     return {found: false};
 }"""
 
 JS_CLICK_BAT_DAU = """() => {
-    const keywords = ['bắt đầu', 'start', 'play', 'begin'];
     for (const b of document.querySelectorAll('button, input[type=button], [role=button], a')) {
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
-        const t = (b.innerText || b.textContent || b.value || '').trim().toLowerCase();
-        if (keywords.some(k => t.includes(k))) { b.click(); return {clicked: true, text: t}; }
+        const t = (b.innerText || b.textContent || b.value || '').trim();
+        if (t.includes('Bắt đầu')) { b.click(); return {clicked: true, text: t}; }
     }
     return {clicked: false};
 }"""
@@ -408,51 +379,10 @@ JS_CLICK_OK = """() => {
 
 JS_GO_LOBBY = """() => {
     try {
-        if (typeof place.enter === 'function') { place.enter('Lobby'); return 'enter:Lobby'; }
-        if (typeof place.enterPlace === 'function') { place.enterPlace('Lobby'); return 'enterPlace:Lobby'; }
         if (typeof place.enterParent === 'function') { place.enterParent(); return 'enterParent'; }
         if (typeof place.leaveTable === 'function') { place.leaveTable(); return 'leaveTable'; }
-        return 'no leave/enter function';
+        return 'no leave function';
     } catch(e) { return 'err: ' + e.toString(); }
-}"""
-
-# Navigate to Gomoku-specific lobby (Lobby.caro) from main Lobby
-# Clicks the Gomoku game icon/tab in the game list
-JS_NAVIGATE_TO_GOMOKU_LOBBY = """() => {
-    const keywords = ['gomoku', 'caro', 'game caro', 'gameo'];
-    // Try clicking game tabs/navigation elements with text matching keywords
-    // Also check img alt attributes and aria-labels
-    for (const el of document.querySelectorAll('a, button, [role="button"], div, span')) {
-        const innerText = (el.innerText || '').trim().toLowerCase();
-        const textContent = (el.textContent || '').trim().toLowerCase();
-        const altText = (el.querySelector('img') && el.querySelector('img').alt) ? el.querySelector('img').alt.toLowerCase() : '';
-        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-        const allText = (innerText + ' ' + textContent + ' ' + altText + ' ' + ariaLabel);
-        if (allText.length === 0 || allText.length > 80) continue;
-        if (el.offsetParent === null && el.tagName !== 'A') continue;
-        if (keywords.some(k => allText.includes(k))) {
-            el.click();
-            return true;
-        }
-    }
-    // Try clicking images with gomoku/caro in src or alt
-    for (const img of document.querySelectorAll('img')) {
-        const src = (img.src || '').toLowerCase();
-        const alt = (img.alt || '').toLowerCase();
-        if (src.includes('gomoku') || src.includes('caro') || alt.includes('gomoku') || alt.includes('caro')) {
-            img.click();
-            return true;
-        }
-    }
-    // Try clicking links with gomoku/caro in href
-    for (const a of document.querySelectorAll('a')) {
-        const href = (a.href || '').toLowerCase();
-        if (href.includes('gomoku') || href.includes('caro')) {
-            a.click();
-            return true;
-        }
-    }
-    return false;
 }"""
 
 # === Create table + wait for opponent (reverse surrender) ===
@@ -556,19 +486,17 @@ def is_browser_alive(page):
 
 
 def ensure_in_lobby(game_frame, page, max_attempts=3):
-    """Make sure we're back at Gomoku lobby (not in a table).
+    """Make sure we're back at Lobby (not in a table).
     
-    On Facebook Gaming, Gomoku-specific lobby paths include: Lobby.caro, Lobby.caro.0, etc.
-    'Lobby' alone is the main FB Gaming page — NOT Gomoku-specific.
+    On Facebook Gaming, lobby paths include: Lobby, Lobby.caro, Lobby.caro.0, etc.
     """
-    gomoku_lobby_paths = {"Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-    gomoku_lobby_paths_alt = {"Loby.caro.0", "Loby.caro"}
+    fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
     for _ in range(max_attempts):
         s = game_frame.evaluate(JS_GET_STATE)
         path = s.get("path")
-        if path in gomoku_lobby_paths or path in gomoku_lobby_paths_alt or (path and "caro" in path.lower()):
+        if path in fb_lobby_paths or path == "Lobby":
             return True
-        log(f"  [nav] path={path} — leaving table for Gomoku lobby...")
+        log(f"  [nav] path={path} — leaving table...")
         try:
             game_frame.evaluate(JS_GO_LOBBY)
         except Exception as e:
@@ -579,7 +507,7 @@ def ensure_in_lobby(game_frame, page, max_attempts=3):
             game_frame = new_gf
     s = game_frame.evaluate(JS_GET_STATE)
     path = s.get("path")
-    return path in gomoku_lobby_paths or path in gomoku_lobby_paths_alt or (path and "caro" in path.lower())
+    return path in fb_lobby_paths or path == "Lobby"
 
 
 DEFAULT_GOMOKU_LOBBY = "Loby.caro.0"
@@ -588,14 +516,14 @@ DEFAULT_GOMOKU_LOBBY = "Loby.caro.0"
 def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attempts=5):
     """Navigate to a specific lobby path (e.g. 'Loby.caro.0') and wait for it to load.
     
-    IMPORTANT: 'Lobby' (Facebook Gaming main page) contains ALL games — NOT Gomoku-only.
-    We must navigate to 'Lobby.caro' to see Gomoku tables exclusively.
+    On Facebook Gaming, the game URL already goes to the Gomoku lobby directly,
+    so 'Lobby' path is equivalent to 'Loby.caro.0'. This function handles both
+    cases gracefully, including Facebook Gaming's 'Lobby.caro' sub-paths.
     """
     log(f"  [nav] navigating to lobby: {lobby_path}")
-    # Gomoku-specific lobbies: these contain ONLY Gomoku tables
-    gomoku_lobby_paths = {"Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-    # Also accept "Loby.caro.0" for non-Facebook variants
-    gomoku_lobby_paths_alt = {"Loby.caro.0", "Loby.caro"}
+    # Normalize: on Facebook Gaming, "Loby.caro.0" ≈ "Lobby.caro" ≈ "Lobby"
+    # They all represent the Gomoku game lobby
+    fb_equivalent_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
     
     for attempt in range(1, max_attempts + 1):
         s = game_frame.evaluate(JS_GET_STATE)
@@ -604,46 +532,22 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
         if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
             log(f"    ✓ already at {current_path}")
             return True
-        # Gomoku-specific lobbies: Lobby.caro, Lobby.caro.0, Lobby.caro.1
-        if current_path in gomoku_lobby_paths or current_path in gomoku_lobby_paths_alt:
-            log(f"    ✓ at Gomoku lobby {current_path} (equivalent to {lobby_path})")
+        # Facebook Gaming equivalents: Lobby, Lobby.caro, Lobby.caro.0 all work for Gomoku
+        if current_path in fb_equivalent_paths:
+            log(f"    ✓ at Facebook Gaming lobby {current_path} (equivalent to {lobby_path})")
             return True
         # Partial match: check if the game type (caro) matches
         if current_path and "caro" in str(current_path).lower():
             log(f"    ✓ at caro lobby {current_path} (equivalent to {lobby_path})")
             return True
-        # If at "Lobby" with game state, it's the Gomoku game loaded directly
-        if current_path == "Lobby":
-            try:
-                s_check = game_frame.evaluate(JS_GET_STATE)
-                if s_check.get("playerId") and s_check.get("balance"):
-                    log(f"    ✓ at Lobby with game state — Gomoku game loaded directly")
-                    return True
-            except: pass
         log(f"    attempt {attempt}/{max_attempts}: current_path={current_path}")
         r = game_frame.evaluate(JS_ENTER_LOBBY_PATH, lobby_path)
         log(f"    enter result: {r}")
         if r.get("entered") is False and "not found" in str(r.get("error", "")):
-            log(f"    [!] place.enterPlace not available — trying JS_CLICK_GOMOKU_GAME")
-            # Click Gomoku game icon to navigate from Lobby → Lobby.caro
-            clicked = game_frame.evaluate(JS_NAVIGATE_TO_GOMOKU_LOBBY)
-            if clicked:
-                log(f"    ✓ clicked Gomoku game icon")
-                time.sleep(5)
-            else:
-                log(f"    [!] Gomoku game icon not found — may need manual navigation")
-                if current_path is None or "caro" in str(current_path).lower():
-                    log(f"    ✓ treating current path ({current_path}) as Gomoku lobby")
-                    return True
-        # After all attempts, check if we have game state (balance + playerId)
-        # If so, we're likely already in the Gomoku game at 'Lobby' path
-        s = game_frame.evaluate(JS_GET_STATE)
-        current_path = s.get("path")
-        if current_path == "Lobby":
-            # On direct game load, 'Lobby' IS the Gomoku lobby
-            # Verify by checking game state
-            if s.get("path") and s.get("playerId"):
-                log(f"  [nav] at 'Lobby' with game state — treating as Gomoku lobby")
+            # place.enterPlace doesn't exist — likely Facebook Gaming where Lobby is default
+            log(f"    [!] place.enterPlace not available — treating as lobby")
+            if current_path is None or current_path in fb_equivalent_paths or "caro" in str(current_path).lower():
+                log(f"    ✓ treating current path ({current_path}) as lobby")
                 return True
         time.sleep(5)
         # Re-find game frame
@@ -655,11 +559,8 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
         if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
             log(f"    ✓ reached {current_path}")
             return True
-        # Check for Gomoku-specific lobbies (Lobby.caro, Lobby.caro.0, etc.)
-        gomoku_lobby_paths = {"Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-        gomoku_lobby_paths_alt = {"Loby.caro.0", "Loby.caro"}
-        if current_path in gomoku_lobby_paths or current_path in gomoku_lobby_paths_alt or (current_path and "caro" in current_path.lower()):
-            log(f"    ✓ reached Gomoku lobby: {current_path}")
+        if current_path == "Lobby":
+            log(f"    ✓ reached Lobby (equivalent to {lobby_path})")
             return True
     return False
 
@@ -748,41 +649,14 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
 
 def open_table_browser(game_frame, page, filter_name="Tất cả"):
     """Click 'Chọn bàn' → filter (Tất cả / Còn trống).
-    Only operates in Gomoku lobby (Lobby.caro* / Loby.caro*); if not in Gomoku lobby,
-    attempts to navigate to Gomoku lobby first.
+    Only operates in Gomoku lobby (Loby.caro.0); if not in Gomoku lobby, returns False.
     """
     s = game_frame.evaluate(JS_GET_STATE)
     current_path = s.get("path")
-    # Gomoku-specific lobbies contain ONLY Gomoku tables
-    gomoku_lobby_paths = {"Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-    gomoku_lobby_paths_alt = {"Loby.caro.0", "Loby.caro"}
-    
-    # If at "Lobby" (main FB Gaming page), we need to verify it's the Gomoku lobby
-    # On direct game load, "Lobby" with game state IS the Gomoku lobby
-    if current_path == "Lobby" or current_path is None:
-        # Check if we have game state — if so, this IS the Gomoku lobby
-        if current_path == "Lobby" and s.get("playerId") and s.get("balance"):
-            log(f"  [open_table_browser] at Lobby with game state — treating as Gomoku lobby")
-        else:
-            log(f"  [open_table_browser] at {current_path} — navigating to Gomoku lobby...")
-            if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
-                log(f"  [open_table_browser] FAILED to navigate to Gomoku lobby")
-                return False
-            # Re-read path after navigation
-            s = game_frame.evaluate(JS_GET_STATE)
-            current_path = s.get("path")
-    
-    # Verify we're in Gomoku lobby now
-    # "Lobby" is accepted if it has game state (playerId + balance = in-game)
-    if current_path not in gomoku_lobby_paths and current_path not in gomoku_lobby_paths_alt:
-        if not (current_path and "caro" in str(current_path).lower()):
-            # Allow "Lobby" if game state is present (Gomoku game loaded directly)
-            if current_path == "Lobby" and s.get("playerId") and s.get("balance"):
-                pass  # OK — Gomoku game at Lobby path
-            else:
-                log(f"  [open_table_browser] NOT in Gomoku lobby (path={current_path}) — refusing to search here")
-                return False
-    
+    fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
+    if current_path not in fb_lobby_paths:
+        log(f"  [open_table_browser] NOT in Gomoku lobby (path={current_path}) — refusing to search here")
+        return False
     game_frame.evaluate(JS_CLOSE_POPUPS)
     time.sleep(0.5)
     game_frame.evaluate(JS_CLICK_CHON_BAN)
@@ -824,9 +698,8 @@ def find_target_table(game_frame, target_name, bet_max):
 def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
     """Find a table where target_id is one of the players.
     Uses WS tap approach (faster than DOM popup parsing):
-      1. Install WS message tap (if not installed yet) — filters to only PLAYER_ENTERED (0x019E) messages
-      2. For each table: clear tap, click table, wait for new WS messages (up to 3s),
-         check for target_id in the PLAYER_ENTERED message bytes
+      1. Install WS message tap (if not installed yet)
+      2. For each table: clear tap, click table, check WS messages for target_id bytes
       3. If found, return table dict
 
     This works because when we click a table, server sends PLAYER_ENTERED (0x019E)
@@ -838,10 +711,7 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
     target_bytes_list = list(target_be)
 
     # Install WS tap (idempotent — if already installed, returns true)
-    tap_installed = game_frame.evaluate(JS_INSTALL_WS_TAP)
-    if not tap_installed:
-        log("  [scan-by-id] WS tap failed to install — falling back to name search")
-        return None
+    game_frame.evaluate(JS_INSTALL_WS_TAP)
 
     # Scan all tables visible in lobby
     tables = game_frame.evaluate(JS_SCAN_ALL_TABLES)
@@ -860,38 +730,8 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
         game_frame.evaluate(JS_CLEAR_TAP)
         # Click this table
         game_frame.evaluate(JS_CLICK_TABLE, t["id"])
-
-        # Wait for PLAYER_ENTERED message to arrive — poll based on new messages,
-        # rather than fixed sleep. PLAYER_ENTERED should arrive within 1-2s.
-        # We poll JS_GET_TAP every 150ms, breaking when messages arrive.
-        click_deadline = time.time() + 3.0  # max 3s per table
-        while time.time() < click_deadline:
-            tap = game_frame.evaluate(JS_GET_TAP)
-            if tap:
-                break
-            time.sleep(0.15)  # small poll interval
-
-        # On first table, dump WS diagnostic to verify PLAYER_ENTERED is captured
-        if t == tables_to_scan[0] and not getattr(find_target_by_id, '_diag_dumped', False):
-            find_target_by_id._diag_dumped = True
-            try:
-                diag = game_frame.evaluate(JS_GET_TAP_DIAG)
-                tap_msgs = game_frame.evaluate(JS_GET_TAP)
-                log(f"  [WS-DIAG] After clicking table {t['id']}: {len(diag)} total WS msgs, {len(tap_msgs)} PLAYER_ENTERED (0x019E)")
-                for m in diag[-5:]:
-                    log(f"    cmd=0x{m.get('cmd',0):04X} len={m.get('len',0)} hex={m.get('hex','')[:60]}")
-                if len(tap_msgs) == 0:
-                    code_counts = {}
-                    for m in diag:
-                        c = m.get('cmd', 0)
-                        code_counts[c] = code_counts.get(c, 0) + 1
-                    log(f"  [WS-DIAG] No PLAYER_ENTERED found. Cmd codes present:")
-                    for code, count in sorted(code_counts.items()):
-                        log(f"    0x{code:04X}: {count} messages")
-            except Exception as e:
-                log(f"  [WS-DIAG] dump failed: {e}")
-
-        # Check tap messages for target_id (in PLAYER_ENTERED messages only)
+        time.sleep(1.0)  # wait for PLAYER_ENTERED to arrive
+        # Check tap messages for target_id
         tap = game_frame.evaluate(JS_GET_TAP)
         for msg in tap:
             b = msg.get('bytes') or []
@@ -900,10 +740,6 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
                     log(f"  ✓✓✓ FOUND target_id={target_id} at table {t['id']} (player: '{t['player']}', bet: {t['bet']})")
                     found_table = t
                     break
-            if found_table:
-                break
-        if found_table:
-            break
             if found_table:
                 break
         if found_table:
@@ -926,22 +762,21 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
     return found_table
 
 
-def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max, max_wait_seconds=60, max_tables_to_scan=40):
+def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max, max_wait_seconds=60, max_tables_to_scan=30):
     """Open table browser + poll for target's table up to max_wait_seconds.
     Strategy:
-      1. If target_id is set (>0), search by ID (click each table to find player IDs via WS tap)
-      2. If ID search fails and target_name is set, fall back to name-based search (scans table text)
-      3. If target_id is not set but target_name is set, search by name only
-      4. Else error
+      - If target_id is set (>0), search by ID (click each table to find player IDs)
+      - Else if target_name is set (non-empty), search by name
+      - Else error
     Returns target table dict or None if not found within the time budget.
 
-    Only searches in Loby.caro.0 lobby - will not search if we're in a different lobby.
+    Only searches in Loby.caro.0 lobby — will not search if we're in a different lobby.
     """
     use_id = target_id and int(target_id) > 0
     use_name = bool(target_name and target_name.strip())
 
     if not use_id and not use_name:
-        log("  [wait] neither target_name nor target_id set - cannot find target")
+        log("  [wait] neither target_name nor target_id set — cannot find target")
         return None
 
     # Verify we're in the Gomoku lobby (Loby.caro.0) before searching
@@ -949,55 +784,41 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
     current_path = s.get("path")
     fb_equivalent_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
     if current_path not in fb_equivalent_paths:
-        log(f"  [wait] NOT in Gomoku lobby (path={current_path}) - only searching in Loby.caro.0")
+        log(f"  [wait] NOT in Gomoku lobby (path={current_path}) — only searching in Loby.caro.0")
         return None
     log(f"  [wait] at Gomoku lobby: {current_path}")
 
-    search_modes = []
-    if use_id:
-        search_modes.append("ID")
-    if use_name:
-        search_modes.append("name")
-    search_mode = "/".join(search_modes)
+    search_mode = "ID" if use_id else "name"
     log(f"  [wait] polling for target (mode={search_mode}, target_id={target_id}, name={target_name!r}) up to {max_wait_seconds}s...")
     deadline = time.time() + max_wait_seconds
     attempt = 0
-    # Open browser first with "Tat ca" filter
+    # Open browser first with "Tất cả" filter
     open_table_browser(game_frame, page, filter_name="Tất cả")
 
     while time.time() < deadline:
         attempt += 1
-        # Try ID-based search first (preferred)
         if use_id:
             target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
-            if target:
-                return target
-
-        # Fallback to name-based search if ID search failed or not using ID
-        if use_name:
+        else:
             target = find_target_table(game_frame, target_name, bet_max)
-            if target:
-                log(f"  [wait] FOUND target by name: {target_name}")
-                return target
+        if target:
+            return target
 
         # Switch to "Còn trống" filter as alternative
         game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
         time.sleep(2)
         if use_id:
             target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
-            if target:
-                return target
-        if use_name:
+        else:
             target = find_target_table(game_frame, target_name, bet_max)
-            if target:
-                log(f"  [wait] FOUND target by name: {target_name}")
-                return target
+        if target:
+            return target
 
         # Switch back to "Tất cả"
         game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
         # Wait + try again (every 10s)
         wait = min(10, max(2, deadline - time.time()))
-        log(f"  [wait] attempt #{attempt} (mode={search_mode}): target not found - retry in {wait:.0f}s...")
+        log(f"  [wait] attempt #{attempt} (mode={search_mode}): target not found — retry in {wait:.0f}s...")
         time.sleep(wait)
         # Re-open table browser (in case lobby state changed)
         try:
@@ -1005,10 +826,10 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
             current_path = s.get("path")
             fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
             if current_path not in fb_lobby_paths:
-                log(f"  [wait] retry: not in Gomoku lobby (path={current_path}) - attempting to return")
+                log(f"  [wait] retry: not in Gomoku lobby (path={current_path}) — attempting to return")
                 ensure_in_lobby(game_frame, page)
                 if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
-                    log(f"  [wait] retry: could not return to {DEFAULT_GOMOKU_LOBBY} - aborting search")
+                    log(f"  [wait] retry: could not return to {DEFAULT_GOMOKU_LOBBY} — aborting search")
                     return None
             open_table_browser(game_frame, page, filter_name="Tất cả")
         except Exception as e:
@@ -1024,26 +845,34 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     bal_before, _ = get_balance(game_frame)
     log(f"  balance before: {bal_before:,}")
 
-    # Step 0: Navigate to lobby via place.enter() (NO page refresh)
-    log("  [0] place.enter('Lobby') — navigate without refresh...")
+    # Step 0: Refresh page before looking for target (ensures fresh lobby state)
+    log("  [0] refreshing page before target search...")
     try:
-        game_frame.evaluate(JS_GO_LOBBY)
-        time.sleep(8)
-        log("    navigated to lobby via place.enter()")
+        page.reload(wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(10000)
+        log("    page refreshed")
     except Exception as e:
-        log(f"    [!] place.enter failed: {e}")
+        log(f"    [!] page refresh failed: {e}")
     
-    # Ensure game frame is alive (no reload) — wait longer for frame to reappear
-    new_gf = find_game_frame(page, max_wait=30)
+    # Re-find game frame after refresh
+    new_gf = find_game_frame(page, max_wait=60)
     if new_gf:
         game_frame = new_gf
         game_frame.evaluate(JS_CLOSE_POPUPS)
         time.sleep(2)
+        # Wait for game state to be fully loaded
+        for _ in range(10):
+            try:
+                s = game_frame.evaluate(JS_GET_STATE)
+                if s.get("path") and s.get("playerId"):
+                    break
+            except:
+                pass
+            time.sleep(2)
         bal_before, _ = get_balance(game_frame)
-        log(f"    balance: {bal_before:,}")
+        log(f"    balance after refresh: {bal_before:,}")
     else:
-        log("    [!] no game frame — attempting ensure_in_lobby")
-        ensure_in_lobby(game_frame, page)
+        log("    [!] no game frame after refresh — using existing")
 
     # Step 1: Navigate to Gomoku lobby (Loby.caro.0) to find target's table
     log("  [0.5] navigating to Loby.caro.0...")
@@ -1103,25 +932,10 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     if not found_start:
         log("    [!] Bắt đầu not found — trying SURRENDER anyway")
 
-    # Step 5.5: Verify game is active and target is actually a player
-    # Check: we must be IN an active game, and target (opponent) must be present
-    log("  [5.5] verifying game state before SURRENDER...")
-    table_state = game_frame.evaluate(JS_GET_TABLE_INFO)
-    player_count = game_frame.evaluate(JS_FIND_PLAYER_COUNT_IN_TABLE)
-    log(f"    table_info: {table_state}")
-    log(f"    player_count: {player_count}")
-    
-    # Check if game is already over (look for game-over indicators in body text)
-    if game_frame.evaluate("() => document.body ? document.body.innerText : ''").lower().find("game over") >= 0:
-        log("    [!] game already over — skipping SURRENDER")
-        return False, 0
-
     # Step 6: send SURRENDER
     log("  [6] sending SURRENDER...")
     r = game_frame.evaluate(JS_SEND_SURRENDER)
     log(f"    result: {r}")
-    # err_code 22 = "Match finished" — surrender was accepted, match ended
-    # This IS a successful transfer (money lost to target)
     surrender_ok = r.get("ok", False) or r.get("err_code") == 22
 
     # If "Bạn không tham gia bàn chơi này" — wait + retry
@@ -1145,20 +959,12 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
 
     ensure_in_lobby(game_frame, page)
 
-    # Wait for balance to settle after surrender (server may update async)
-    time.sleep(5)
-    # Check balance multiple times to ensure it's settled
-    for _ in range(3):
-        bal_check, _ = get_balance(game_frame)
-        if bal_check != bal_after:
-            bal_after = bal_check
-        time.sleep(2)
+    # Final balance
+    bal_after, _ = get_balance(game_frame)
     delta = bal_after - bal_before
     log(f"  [done] balance: {bal_before:,} → {bal_after:,} (Δ={delta:+,})")
     if delta < 0:
         log(f"         ✓ lost {-delta:,} xu (transferred to target)")
-    if delta < -bet_max:
-        log(f"         ⚠⚠⚠ WARNING: lost {-delta:,} xu > bet_max {bet_max:,} — possible multiple losses")
     return surrender_ok, max(0, -delta)
 
 
@@ -1186,25 +992,27 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         log(f"  [SKIP] balance {bal_before:,} < min_balance {min_balance:,}")
         return False, 0
     
-    # Step 0: Navigate to lobby via place.enter() (NO page refresh)
-    log("  [0] place.enter('Lobby') — navigate without refresh...")
+    # Step 0: Refresh page before creating table (ensures fresh UI state)
+    log("  [0] refreshing page before table creation...")
     try:
-        game_frame.evaluate(JS_GO_LOBBY)
-        time.sleep(8)
-        log("    navigated to lobby via place.enter()")
+        page.reload(wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(10000)
+        log("    page refreshed")
     except Exception as e:
-        log(f"    [!] place.enter failed: {e}")
+        log(f"    [!] page refresh failed: {e}")
     
-    # Ensure game frame is alive (no reload) — wait longer for frame to reappear
-    new_gf = find_game_frame(page, max_wait=30)
+    # Re-find game frame after refresh
+    new_gf = find_game_frame(page, max_wait=60)
     if new_gf:
         game_frame = new_gf
+        # Close any popups after refresh
         game_frame.evaluate(JS_CLOSE_POPUPS)
         time.sleep(2)
+        # Re-fetch balance
         bal_before, _ = get_balance(game_frame)
-        log(f"    balance: {bal_before:,}")
+        log(f"    balance after refresh: {bal_before:,}")
     else:
-        log("    [!] no game frame")
+        log("    [!] no game frame after refresh")
         return False, 0
     
     # Step 1: Navigate to Gomoku lobby (Loby.caro.0) before creating table
@@ -1286,19 +1094,12 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     
     ensure_in_lobby(game_frame, page)
     
-    # Wait for balance to settle after surrender
-    time.sleep(5)
-    for _ in range(3):
-        bal_check, _ = get_balance(game_frame)
-        if bal_check != bal_after:
-            bal_after = bal_check
-        time.sleep(2)
+    # Final balance
+    bal_after, _ = get_balance(game_frame)
     delta = bal_after - bal_before
     log(f"  [done] balance: {bal_before:,} → {bal_after:,} (Δ={delta:+,})")
     if delta < 0:
         log(f"         ✓ lost {-delta:,} xu (transferred to opponent)")
-    if delta < -bet_max:
-        log(f"         ⚠⚠⚠ WARNING: lost {-delta:,} xu > bet_max {bet_max:,} — possible multiple losses")
     return surrender_ok, max(0, -delta)
 
 
@@ -1416,149 +1217,6 @@ def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
     return game_frame
 
 
-# =====================================================================
-# Inline fingerprint + stealth (no external module)
-# =====================================================================
-_USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
-]
-
-_VIEWPORTS = [
-    {"width": 1920, "height": 1080},
-    {"width": 1536, "height": 864},
-    {"width": 1440, "height": 900},
-    {"width": 1366, "height": 768},
-    {"width": 1920, "height": 1200},
-]
-
-
-def _simple_fingerprint(cookie_name: str) -> dict:
-    """Generate a deterministic fingerprint based on cookie name (no file I/O)."""
-    h = int(hashlib.md5(cookie_name.encode()).hexdigest(), 16)
-    ua = _USER_AGENTS[h % len(_USER_AGENTS)]
-    vp = _VIEWPORTS[h % len(_VIEWPORTS)]
-    platform = "Win32" if "Windows" in ua else ("MacIntel" if "Macintosh" in ua else "Linux x86_64")
-    # Use vi-VN for Vietnamese cookies, en-US otherwise
-    locale = "vi-VN" if "vi" in cookie_name.lower() else "en-US"
-    return {
-        "user_agent": ua,
-        "viewport": vp,
-        "locale": locale,
-        "timezone": "Asia/Ho_Chi_Minh" if "vi" in cookie_name.lower() else "America/New_York",
-        "platform": platform,
-        "webgl_vendor": "Google Inc. (Intel)",
-        "webgl_renderer": "ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.1)",
-        "hardware_concurrency": 8,
-        "device_memory": 8,
-        "color_scheme": "light",
-        "screen": {"width": vp["width"], "height": vp["height"] + 48, "availWidth": vp["width"], "availHeight": vp["height"]},
-        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-
-def _build_stealth_js(fp: dict) -> str:
-    """Inline stealth JS — same as build_stealth_js but without external module."""
-    fp_json = json.dumps(fp, ensure_ascii=False)
-    return f"""() => {{
-    const FP = {fp_json};
-    try {{
-        Object.defineProperty(navigator, 'webdriver', {{get: () => undefined, configurable: true}});
-        try {{ delete Object.getPrototypeOf(navigator).webdriver; }} catch (e) {{}}
-        Object.defineProperty(navigator, 'platform', {{get: () => FP.platform, configurable: true}});
-        const mkMime = (type, suffixes, description) => {{
-            const m = {{type, suffixes, description}};
-            m.enabledPlugin = null;
-            return m;
-        }};
-        const mkPlugin = (name, filename, description, mime) => {{
-            const p = {{name, filename, description, length: 1}};
-            p[0] = mime;
-            mime.enabledPlugin = p;
-            p.item = (i) => p[i] || null;
-            p.namedItem = (n) => (n === mime.type ? mime : null);
-            p.refresh = () => {{}};
-            return p;
-        }};
-        const pdfMime = mkMime('application/pdf', 'pdf', 'Portable Document Format');
-        const pdfPlugin = mkPlugin('Chrome PDF Plugin', 'internal-pdf-viewer', 'Portable Document Format', pdfMime);
-        const pdfViewer = mkPlugin('Chrome PDF Viewer', 'mhjfbmdgcfjbbpaeojofohoefgiehjai', '', mkMime('application/pdf', 'pdf', ''));
-        const nacl = mkPlugin('Native Client', 'internal-nacl-plugin', '', mkMime('application/x-nacl', '', 'Native Client Executable'));
-        const fakePlugins = [pdfPlugin, pdfViewer, nacl];
-        fakePlugins.item = (i) => fakePlugins[i] || null;
-        fakePlugins.namedItem = (n) => ({{'Chrome PDF Plugin': pdfPlugin, 'Chrome PDF Viewer': pdfViewer, 'Native Client': nacl}}[n] || null);
-        fakePlugins.refresh = () => {{}};
-        Object.defineProperty(navigator, 'plugins', {{get: () => fakePlugins, configurable: true}});
-        Object.defineProperty(navigator, 'language', {{get: () => FP.locale, configurable: true}});
-        Object.defineProperty(navigator, 'languages', {{
-            get: () => Object.freeze([FP.locale, FP.locale.split('-')[0], 'en']),
-            configurable: true
-        }});
-        Object.defineProperty(navigator, 'hardwareConcurrency', {{get: () => FP.hardware_concurrency, configurable: true}});
-        Object.defineProperty(navigator, 'deviceMemory', {{get: () => FP.device_memory, configurable: true}});
-        Object.defineProperty(navigator, 'maxTouchPoints', {{get: () => 0, configurable: true}});
-        if (!window.chrome) {{
-            window.chrome = {{
-                runtime: {{id: undefined, connect: () => {{}}, sendMessage: () => {{}}}},
-                app: {{isInstalled: false}},
-                csi: () => {{}},
-                loadTimes: () => {{}}
-            }};
-        }}
-        if (FP.screen) {{
-            const def = (obj, prop, val) => {{
-                try {{ Object.defineProperty(obj, prop, {{get: () => val, configurable: true}}); }} catch (e) {{}}
-            }};
-            def(screen, 'width', FP.screen.width);
-            def(screen, 'height', FP.screen.height);
-            def(screen, 'availWidth', FP.screen.availWidth);
-            def(screen, 'availHeight', FP.screen.availHeight);
-            def(screen, 'colorDepth', 24);
-            def(screen, 'pixelDepth', 24);
-            def(window, 'outerWidth', FP.screen.width);
-            def(window, 'outerHeight', FP.screen.height + 37);
-        }}
-        if (window.RTCPeerConnection) {{
-            const origRTC = window.RTCPeerConnection;
-            window.RTCPeerConnection = function(...args) {{
-                if (args[0] && args[0].iceServers) {{
-                    args[0].iceServers = [];
-                }}
-                return new origRTC(...args);
-            }};
-            window.RTCPeerConnection.prototype = origRTC.prototype;
-        }}
-    }} catch (e) {{}}
-}}"""
-
-
-def _stealth_launch_args(fp: dict) -> list:
-    """Chromium launch args with basic stealth flags."""
-    args = [
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-features=IsolateOrigins,site-per-process",
-        "--disable-webrtc-multiple-routes",
-        "--disable-webrtc-pc2-experiment",
-        "--enforce-webrtc-ip-permission-check",
-        "--disable-notifications",
-        "--disable-extensions",
-        "--disable-component-extensions-with-background-pages",
-        "--disable-default-apps",
-        "--disable-gpu-sandbox",
-    ]
-    if fp.get("locale"):
-        args.append(f"--lang={fp['locale']}")
-    vp = fp.get("viewport") or {}
-    if vp.get("width") and vp.get("height"):
-        args.append(f"--window-size={vp['width']},{vp['height']}")
-    return args
-
-
 def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
     """Close and relaunch browser + context to prevent crashes.
     Returns (browser, ctx, page, game_frame)."""
@@ -1569,13 +1227,13 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
     try:
         browser.close()
     except: pass
-    browser = p.chromium.launch(headless=headless, args=_stealth_launch_args(fp))
+    browser = p.chromium.launch(headless=headless, args=al.stealth_launch_args(fp))
     ctx = browser.new_context(
         viewport=fp["viewport"], locale=fp["locale"],
         user_agent=fp["user_agent"], timezone_id=fp["timezone"],
         color_scheme=fp.get("color_scheme", "light"),
     )
-    ctx.add_init_script(_build_stealth_js(fp))
+    ctx.add_init_script(al.build_stealth_js(fp))
     ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
     page = ctx.new_page()
     page.set_default_timeout(45000)
@@ -1603,49 +1261,46 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
 
 def main():
     parser = argparse.ArgumentParser(description="Gomoku auto-cycle: claim → surrender → claim → surrender ...")
-    parser.add_argument("--cookie", default=_safe_env("SINGLE_COOKIE_FILE", "ck2.txt"),
+    parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck2.txt"),
                         help="Cookie file (default: ck2.txt)")
-    parser.add_argument("--target-name", default="nguyen123456",
+    parser.add_argument("--target-name", default=os.environ.get("TARGET_NAME", "nguyen123456"),
                         help="Player name to find in tables (optional — if target_id is set, name is ignored)")
-    # Hardcoded target ID (repo is private — safe to hardcode)
-    parser.add_argument("--target-id", type=int, default=68952059,
+    parser.add_argument("--target-id", type=int, default=int(os.environ.get("TARGET_ID", "68639698")),
                         help="Player ID to find (preferred — unique, no name collision). Default: 0 (search by name)")
-    parser.add_argument("--max-tables-to-scan", type=int, default=int(_safe_env("MAX_TABLES_TO_SCAN", "30")),
+    parser.add_argument("--max-tables-to-scan", type=int, default=int(os.environ.get("MAX_TABLES_TO_SCAN", "30")),
                         help="Max tables to scan when searching by ID (default: 30 — each table click takes ~1.5s)")
-    parser.add_argument("--cycles", type=int, default=int(_safe_env("CYCLES", "3")),
+    parser.add_argument("--cycles", type=int, default=int(os.environ.get("CYCLES", "3")),
                         help="Number of claim→surrender cycles (default: 3)")
-    parser.add_argument("--claim-min", type=int, default=int(_safe_env("CLAIM_MIN", "50000")),
+    parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "50000")),
                         help="Stop claiming when balance >= this (default: 50000)")
-    parser.add_argument("--claim-max", type=int, default=int(_safe_env("CLAIM_MAX", "55000")),
+    parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "55000")),
                         help="Hard stop claiming when balance >= this (default: 55000)")
-    parser.add_argument("--bet-max", type=int, default=int(_safe_env("BET_MAX", "100000")),
+    parser.add_argument("--bet-max", type=int, default=int(os.environ.get("BET_MAX", "100000")),
                         help="Max bet to accept (default: 100000)")
-    parser.add_argument("--min-balance", type=int, default=int(_safe_env("MIN_BALANCE", "1000")),
+    parser.add_argument("--min-balance", type=int, default=int(os.environ.get("MIN_BALANCE", "1000")),
                         help="Stop if balance drops below this (default: 1000)")
-    parser.add_argument("--max-claims-per-cycle", type=int, default=int(_safe_env("MAX_CLAIMS_PER_CYCLE", "200")),
+    parser.add_argument("--max-claims-per-cycle", type=int, default=int(os.environ.get("MAX_CLAIMS_PER_CYCLE", "200")),
                         help="Max claim attempts per cycle (default: 200)")
-    parser.add_argument("--claim-cooldown", type=float, default=float(_safe_env("CLAIM_COOLDOWN", "1.0")),
+    parser.add_argument("--claim-cooldown", type=float, default=float(os.environ.get("CLAIM_COOLDOWN", "1.0")),
                         help="Seconds between claims (default: 1.0)")
-    parser.add_argument("--delay-between-cycles", type=float, default=float(_safe_env("DELAY_BETWEEN_CYCLES", "10")),
+    parser.add_argument("--delay-between-cycles", type=float, default=float(os.environ.get("DELAY_BETWEEN_CYCLES", "10")),
                         help="Seconds between cycles (default: 10)")
-    parser.add_argument("--target-wait-seconds", type=int, default=int(_safe_env("TARGET_WAIT_SECONDS", "60")),
+    parser.add_argument("--target-wait-seconds", type=int, default=int(os.environ.get("TARGET_WAIT_SECONDS", "60")),
                         help="Seconds to wait for target's table to appear (default: 60)")
-    parser.add_argument("--headless", default=_safe_env("HEADLESS", "true").lower() == "true",
+    parser.add_argument("--headless", default=os.environ.get("HEADLESS", "true").lower() == "true",
                         action="store_true", help="Run headless")
-    parser.add_argument("--mode", default=_safe_env("MODE", "surrender_to_target"),
+    parser.add_argument("--mode", default=os.environ.get("MODE", "surrender_to_target"),
                         choices=["surrender_to_target", "create_own_table"],
                         help="surrender_to_target: find target's table and surrender (default) | "
                              "create_own_table: create own 40k table, wait for opponent, surrender")
-    parser.add_argument("--bet-amount", type=int, default=int(_safe_env("BET_AMOUNT", "40000")),
+    parser.add_argument("--bet-amount", type=int, default=int(os.environ.get("BET_AMOUNT", "40000")),
                         help="Bet amount to use when creating own table (create_own_table mode)")
     parser.add_argument("--wait-for-opponent", type=lambda v: v.lower() in ('true', '1', 'yes'),
-                        default=_safe_env("WAIT_FOR_OPPONENT", "true").lower() == "true",
+                        default=os.environ.get("WAIT_FOR_OPPONENT", "true").lower() == "true",
                         help="Wait for opponent to join before surrendering (create_own_table mode)")
-    parser.add_argument("--opponent-wait-seconds", type=int, default=int(_safe_env("OPPONENT_WAIT_SECONDS", "120")),
+    parser.add_argument("--opponent-wait-seconds", type=int, default=int(os.environ.get("OPPONENT_WAIT_SECONDS", "120")),
                         help="Seconds to wait for opponent when creating own table (default: 120)")
     args = parser.parse_args()
-
-    # Target values are hardcoded (repo is private) — no secret masking issues
 
     cookie_path = args.cookie
     if not os.path.isabs(cookie_path):
@@ -1658,7 +1313,7 @@ def main():
     cookies = parse_cookie_string(cookie_raw)
     log(f"[cookie] parsed {len(cookies)} cookies from {os.path.basename(cookie_path)}")
 
-    fp = _simple_fingerprint(os.path.basename(cookie_path))
+    fp = al.get_or_create_fingerprint(os.path.basename(cookie_path))
     log(f"[fp] UA={fp['user_agent'][:50]}... viewport={fp['viewport']}")
     log(f"[config] target='{args.target_name}' (id={args.target_id})")
     log(f"         claim_min={args.claim_min:,}, claim_max={args.claim_max:,}")
@@ -1667,13 +1322,13 @@ def main():
     cycle_results = []
     total_xu_to_target = 0
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=args.headless, args=_stealth_launch_args(fp))
+        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
         ctx = browser.new_context(
             viewport=fp["viewport"], locale=fp["locale"],
             user_agent=fp["user_agent"], timezone_id=fp["timezone"],
             color_scheme=fp.get("color_scheme", "light"),
         )
-        ctx.add_init_script(_build_stealth_js(fp))
+        ctx.add_init_script(al.build_stealth_js(fp))
         ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
         page = ctx.new_page()
         page.set_default_timeout(45000)
@@ -1750,13 +1405,13 @@ def main():
                         browser.close()
                     except: pass
                     try:
-                        browser = p.chromium.launch(headless=args.headless, args=_stealth_launch_args(fp))
+                        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
                         ctx = browser.new_context(
                             viewport=fp["viewport"], locale=fp["locale"],
                             user_agent=fp["user_agent"], timezone_id=fp["timezone"],
                             color_scheme=fp.get("color_scheme", "light"),
                         )
-                        ctx.add_init_script(_build_stealth_js(fp))
+                        ctx.add_init_script(al.build_stealth_js(fp))
                         ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
                         page = ctx.new_page()
                         page.set_default_timeout(45000)
