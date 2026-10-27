@@ -25,14 +25,11 @@ Loop N cycles:
 
 ## Setup
 
-### Bước 1: Set 2 secrets (chỉ làm 1 lần)
+### Bước 1: Target đã hardcode trong code (không cần secret)
 
-Vào https://github.com/nguyen05566-org/jieqi-core/settings/secrets/actions và add:
-
-| Secret name | Value | Ghi chú |
-|---|---|---|
-| `TARGET_NAME` | `nguyen` | Tên player cần SURRENDER cho |
-| `TARGET_ID` | `68952059` | ID nội bộ của target trên gamevh |
+Target name + ID được hardcode trong code (repo private):
+- TARGET_NAME = `nguyen123456`
+- TARGET_ID = `68952059`
 
 (Không cần secret cho cookie — file `ck1.txt` đã có trong repo.)
 

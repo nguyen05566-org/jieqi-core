@@ -4,7 +4,7 @@ name: ck2
 # - workflow_dispatch: trigger thủ công từ tab Actions
 # - schedule (cron mỗi 6h): tự động chạy lúc 00:00, 06:00, 12:00, 18:00 UTC
 # Cookie được đọc từ file `ck2.txt` trong repo (không cần secret FB_COOKIE).
-# Target name + ID vẫn đọc từ secrets (TARGET_NAME, TARGET_ID).
+# Target name + ID are hardcoded in code (repo is private).
 # Concurrency + cancel-in-progress: true → nếu run mới trigger khi run cũ chưa xong,
 # run cũ sẽ bị cancel để tránh chồng (chống account bị flag bot).
 on:
@@ -114,8 +114,6 @@ jobs:
       - name: Run ck2.py
         env:
           SINGLE_COOKIE_FILE: 'ck2.txt'
-          TARGET_NAME: ${{ secrets.TARGET_NAME }}
-          TARGET_ID: ${{ secrets.TARGET_ID }}
           CYCLES: ${{ inputs.cycles || '20' }}
           CLAIM_MIN: ${{ inputs.claim_min || '50000' }}
           CLAIM_MAX: ${{ inputs.claim_max || '55000' }}
@@ -133,21 +131,9 @@ jobs:
           OPPONENT_WAIT_SECONDS: ${{ inputs.opponent_wait_seconds || '120' }}
         run: |
           set +e
-          # Target can be specified by ID only (preferred) or name only or both.
-          # If TARGET_ID is set (non-empty and >0), search by ID.
-          # Else if TARGET_NAME is set, search by name.
-          # Else error.
-          if [ -z "$TARGET_NAME" ] && [ -z "$TARGET_ID" ]; then
-            echo "::error::Both TARGET_NAME and TARGET_ID secrets are empty. Set at least one in Settings → Secrets → Actions"
-            exit 1
-          fi
           echo "=== Configuration ==="
           echo "Cookie file: $SINGLE_COOKIE_FILE (read from repo, not secret)"
-          if [ -n "$TARGET_ID" ] && [ "$TARGET_ID" != "0" ]; then
-            echo "Target: search by ID=$TARGET_ID (preferred — unique)"
-          else
-            echo "Target: search by name=$TARGET_NAME"
-          fi
+          echo "Target: hardcoded in code (nguyen123456, id=68952059)"
           echo "Cycles: $CYCLES"
           echo "Claim range: [$CLAIM_MIN, $CLAIM_MAX]"
           echo "Bet max: $BET_MAX"
