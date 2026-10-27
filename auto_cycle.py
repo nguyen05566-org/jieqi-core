@@ -1216,22 +1216,10 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
         log("    [!] Vào chơi not found — table may be full or rejected")
         return False, 0
 
-    # Step 5: wait for "Bắt đầu" button (or game may have auto-started)
-    log("  [5] waiting for Bắt đầu button (max 30s)...")
-    found_start = False
-    for i in range(15):
-        r = game_frame.evaluate(JS_FIND_BAT_DAU)
-        if r.get("found"):
-            log(f"    ✓ Bắt đầu found (text: {r.get('text')})")
-            game_frame.evaluate(JS_CLICK_BAT_DAU)
-            log(f"    → clicked Bắt đầu, waiting 5s for game start...")
-            time.sleep(5)
-            found_start = True
-            break
-        time.sleep(2)
-    if not found_start:
-        log("    [!] Bắt đầu not found — trying SURRENDER anyway")
-
+    # Step 5: DO NOT click "Bắt đầu" — surrender immediately to avoid game starting
+    # If we click "Bắt đầu", game starts and we risk losing more than the bet
+    log("  [5] skipping Bắt đầu — surrendering immediately to avoid game starting")
+    
     # Step 5.5: Verify game is active and target is actually a player
     # Check: we must be IN an active game, and target (opponent) must be present
     log("  [5.5] verifying game state before SURRENDER...")
@@ -1249,7 +1237,11 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     log("  [6] sending SURRENDER...")
     r = game_frame.evaluate(JS_SEND_SURRENDER)
     log(f"    result: {r}")
-    surrender_ok = r.get("ok", False) or r.get("err_code") == 22
+    # err_code 22 = "Match finished" — match already ended, NO transfer happened
+    surrender_ok = r.get("ok", False)
+    if r.get("err_code") == 22:
+        log(f"    [!] Match already finished — no transfer via SURRENDER")
+        surrender_ok = False
 
     # If "Bạn không tham gia bàn chơi này" — wait + retry
     if not surrender_ok and r.get("err_msg") and "không tham gia" in r.get("err_msg", ""):
@@ -1257,7 +1249,10 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
         time.sleep(10)
         r = game_frame.evaluate(JS_SEND_SURRENDER)
         log(f"    retry result: {r}")
-        surrender_ok = r.get("ok", False) or r.get("err_code") == 22
+        surrender_ok = r.get("ok", False)
+        if r.get("err_code") == 22:
+            log(f"    [!] Match already finished on retry — no transfer")
+            surrender_ok = False
 
     # Step 7: close game-over dialog + return to lobby
     log("  [7] closing dialog + returning to lobby...")
@@ -1277,7 +1272,12 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     delta = bal_after - bal_before
     log(f"  [done] balance: {bal_before:,} → {bal_after:,} (Δ={delta:+,})")
     if delta < 0:
-        log(f"         ✓ lost {-delta:,} xu (transferred to target)")
+        if surrender_ok:
+            log(f"         ✓ lost {-delta:,} xu (transferred to target)")
+        else:
+            log(f"         ⚠ lost {-delta:,} xu WITHOUT successful surrender — possible natural loss")
+    if delta < -bet_max:
+        log(f"         ⚠⚠⚠ WARNING: lost {-delta:,} xu > bet_max {bet_max:,} — possible multiple losses")
     return surrender_ok, max(0, -delta)
 
 
@@ -1376,22 +1376,17 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             # Try to start game anyway if auto-start is available
     
     # Step 6: Check if game started, then surrender
-    # Click Bắt đầu if available
-    log("  [5] looking for Bắt đầu button...")
-    for i in range(10):
-        r = game_frame.evaluate(JS_FIND_BAT_DAU)
-        if r.get("found"):
-            log(f"    ✓ Bắt đầu found (text: {r.get('text')})")
-            game_frame.evaluate(JS_CLICK_BAT_DAU)
-            time.sleep(5)
-            break
-        time.sleep(2)
+    # DO NOT click Bắt đầu — surrender immediately to avoid game starting
+    log("  [5] skipping Bắt đầu — surrendering immediately")
     
     # Send SURRENDER
     log("  [6] sending SURRENDER...")
     r = game_frame.evaluate(JS_SEND_SURRENDER)
     log(f"    result: {r}")
-    surrender_ok = r.get("ok", False) or r.get("err_code") == 22
+    surrender_ok = r.get("ok", False)
+    if r.get("err_code") == 22:
+        log(f"    [!] Match already finished — no transfer via SURRENDER")
+        surrender_ok = False
     
     # Close dialogs
     log("  [7] closing dialog + returning to lobby...")
@@ -1410,7 +1405,12 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     delta = bal_after - bal_before
     log(f"  [done] balance: {bal_before:,} → {bal_after:,} (Δ={delta:+,})")
     if delta < 0:
-        log(f"         ✓ lost {-delta:,} xu (transferred to opponent)")
+        if surrender_ok:
+            log(f"         ✓ lost {-delta:,} xu (transferred to opponent)")
+        else:
+            log(f"         ⚠ lost {-delta:,} xu WITHOUT successful surrender — possible natural loss")
+    if delta < -bet_max:
+        log(f"         ⚠⚠⚠ WARNING: lost {-delta:,} xu > bet_max {bet_max:,} — possible multiple losses")
     return surrender_ok, max(0, -delta)
 
 
