@@ -1605,11 +1605,10 @@ def main():
     parser = argparse.ArgumentParser(description="Gomoku auto-cycle: claim → surrender → claim → surrender ...")
     parser.add_argument("--cookie", default=_safe_env("SINGLE_COOKIE_FILE", "ck2.txt"),
                         help="Cookie file (default: ck2.txt)")
-    parser.add_argument("--target-name", default=_safe_env("TARGET_NAME", "nguyen123456"),
+    parser.add_argument("--target-name", default="nguyen123456",
                         help="Player name to find in tables (optional — if target_id is set, name is ignored)")
-    # TARGET_ID may be masked as *** in GH Actions — use safe helper
-    target_id_str = _safe_env("TARGET_ID", "68952059")
-    parser.add_argument("--target-id", type=int, default=int(target_id_str),
+    # Hardcoded target ID (repo is private — safe to hardcode)
+    parser.add_argument("--target-id", type=int, default=68952059,
                         help="Player ID to find (preferred — unique, no name collision). Default: 0 (search by name)")
     parser.add_argument("--max-tables-to-scan", type=int, default=int(_safe_env("MAX_TABLES_TO_SCAN", "30")),
                         help="Max tables to scan when searching by ID (default: 30 — each table click takes ~1.5s)")
@@ -1646,19 +1645,7 @@ def main():
                         help="Seconds to wait for opponent when creating own table (default: 120)")
     args = parser.parse_args()
 
-    # --- Debug: detect GitHub Actions secret masking ---
-    # GitHub Actions masks secret values by replacing them with "***" in logs.
-    # This can also affect env vars passed to the runner. We check for this
-    # and log which values were masked, to help diagnose future issues.
-    # Note: We use partial/obfuscated output to avoid GH Actions re-masking
-    # the actual target ID when it appears in logs.
-    for env_name in ("TARGET_ID", "TARGET_NAME"):
-        raw_val = os.environ.get(env_name, "")
-        if raw_val == "***":
-            log(f"[DEBUG] {env_name} env var is masked (***).")
-            log(f"[DEBUG] → _safe_env() fallback → using hardcoded default)")
-        elif raw_val == "":
-            log(f"[DEBUG] {env_name} env var not set (using _safe_env() fallback)")
+    # Target values are hardcoded (repo is private) — no secret masking issues
 
     cookie_path = args.cookie
     if not os.path.isabs(cookie_path):
