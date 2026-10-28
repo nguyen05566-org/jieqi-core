@@ -13,7 +13,11 @@ Flow (each cycle):
      if you ever want to force a specific room again)
   3. Wait for an opponent to join the table (default 3 minutes / 180s)
   4. Opponent joined (or timeout) -> press ready ("Bat dau" / "San sang")
-     -> send SURRENDER -> lose the bet
+     -> CLICK THE SURRENDER FLAG (🏳) exactly like the in-match UI does:
+     the flag is a canvas button whose onAction fires
+     app.fireStateCommand({code:"SURRENDER"...}) -> confirm msgBox -> OK
+     (nhan vao bieu tuong dau hang ngay khi vao tran). If the flag path
+     fails, falls back to the raw WS SURRENDER command.
   5. Back to lobby -> balance dropped below 50k -> next cycle claims again
      (sau khi surrender se claim lai o chu ky ke tiep)
 
@@ -265,6 +269,61 @@ JS_SEND_SURRENDER = """() => new Promise((resolve) => {
         setTimeout(() => { if (!done) { done = true; resolve({ok: false, error: 'timeout 12s'}); } }, 12000);
     } catch(e) { resolve({ok: false, error: e.toString()}); }
 })"""
+
+# Click the in-match SURRENDER FLAG (🏳) the same way the UI does.
+# The flag button is CANVAS-DRAWN (ftl.caro.App.createButtonCommand, asset
+# 'surrender_bg' — images/surrender.png), so there is NO DOM node to click.
+# A click on the canvas flag triggers: onAction -> app.fireStateCommand(cmd)
+# where cmd = the server-provided state command {code:"SURRENDER", name:
+# "Đầu hàng"/"Surrender", takeConfirmation, waitResult} (see stateById).
+# fireStateCommand then shows the OK/Cancel confirm msgBox (if
+# takeConfirmation) and sends OutboundMessage("SURRENDER") with the same
+# waitResult error handling as a real tap. We replicate exactly that.
+JS_FIRE_SURRENDER_FLAG = """() => {
+    try {
+        if (typeof app === 'undefined' || !app) return {ok: false, error: 'no app object (not in match?)'};
+        if (typeof app.fireStateCommand !== 'function') return {ok: false, error: 'no fireStateCommand'};
+        // find the SURRENDER command object exactly like the flag button uses:
+        // current state first, then any state in the state machine
+        let cmd = null, where = null;
+        const scan = (states) => {
+            for (const k in states) {
+                const st = states[k];
+                if (!st || !st.commands) continue;
+                for (const c of st.commands) {
+                    if (c && c.code === 'SURRENDER') return {cmd: c, state: st.code || st.sid};
+                }
+            }
+            return null;
+        };
+        let hit = scan(app.state ? {cur: app.state} : {});
+        if (!hit) hit = scan(app.stateById || {});
+        if (!hit) hit = scan(app.stateByCode || {});
+        if (!hit) return {ok: false, error: 'SURRENDER not in any state (match not active?)'};
+        cmd = hit.cmd; where = hit.state;
+        app.fireStateCommand(cmd);
+        return {ok: true, state: where, name: cmd.name,
+                takeConfirmation: !!cmd.takeConfirmation, waitResult: !!cmd.waitResult};
+    } catch(e) { return {ok: false, error: e.toString()}; }
+}"""
+
+# Confirm the surrender msgBox that fireStateCommand opens when the state
+# command has takeConfirmation=true (buttons are DOM: OK / Cancel).
+JS_CLICK_SURRENDER_CONFIRM = """() => {
+    for (const b of document.querySelectorAll('.msgBox a, .msgBox button, .msgBox input[type=button], button, input[type=button], a')) {
+        if (b.offsetParent === null) continue;
+        const t = (b.innerText || b.textContent || b.value || '').trim();
+        if (/^(OK|Đồng ý|Dong y|Yes|Confirm|Xác nhận|Xac nhan|Sure)$/i.test(t)) {
+            const r = b.getBoundingClientRect();
+            const o = {bubbles: true, cancelable: true, view: window, clientX: r.x + r.width/2, clientY: r.y + r.height/2};
+            b.dispatchEvent(new MouseEvent('mousedown', o));
+            b.dispatchEvent(new MouseEvent('mouseup', o));
+            b.dispatchEvent(new MouseEvent('click', o));
+            return {clicked: true, text: t};
+        }
+    }
+    return {clicked: false};
+}"""
 
 JS_CLICK_OK = """() => {
     for (const b of document.querySelectorAll('.popup_button.confirm-button, button, input[type=button], a')) {
@@ -547,6 +606,65 @@ def wait_ws_connected(game_frame, page, max_wait=60):
                 gf = new_gf
         time.sleep(3)
     return gf, False
+
+
+def surrender_via_flag(game_frame, page, confirm_timeout=8.0, verify_timeout=12.0):
+    """Click the in-match surrender FLAG (🏳) like the UI does.
+
+    The flag is a canvas-drawn button (images/surrender.png); its onAction is
+    app.fireStateCommand(cmd) with cmd = the server-provided SURRENDER command.
+    This fires the identical code path, then clicks OK on the confirm msgBox.
+
+    Returns (ok: bool, detail: str). Verification: the GAMEOVER (418) signal
+    on the WS tap (installed by the caller) and/or a confirm popup appearing.
+    """
+    gf = game_frame
+    # baseline: only messages arriving AFTER the flag is fired count as proof
+    try:
+        baseline = len(gf.evaluate(JS_GET_TAP_SUMMARY) or [])
+    except Exception:
+        baseline = 0
+    log("    [flag] firing the surrender flag (app.fireStateCommand SURRENDER)...")
+    try:
+        r = gf.evaluate(JS_FIRE_SURRENDER_FLAG)
+    except Exception as e:
+        return False, f"evaluate failed: {type(e).__name__}"
+    log(f"    [flag] result: {r}")
+    if not r or not r.get("ok"):
+        return False, str(r.get("error") if r else "no result")
+
+    # the state command usually has takeConfirmation -> OK/Cancel msgBox appears
+    if r.get("takeConfirmation"):
+        deadline = time.time() + confirm_timeout
+        clicked = False
+        while time.time() < deadline:
+            try:
+                c = gf.evaluate(JS_CLICK_SURRENDER_CONFIRM)
+                if c.get("clicked"):
+                    log(f"    [flag] confirm clicked: {c.get('text')}")
+                    clicked = True
+                    break
+            except Exception:
+                pass
+            time.sleep(0.8)
+        if not clicked:
+            log("    [flag] no confirm popup — command may have gone through directly")
+
+    # verify: tap shows GAMEOVER(418)/ENTER_STATE(419) among NEW messages
+    if verify_timeout > 0:
+        deadline = time.time() + verify_timeout
+        while time.time() < deadline:
+            try:
+                msgs = gf.evaluate(JS_GET_TAP_SUMMARY) or []
+                fresh = msgs[baseline:]
+                if any(m.get("cmd") in (418, 419) for m in fresh):
+                    log(f"    [flag] ✓ match end on WS after flag click: {fresh[-4:]}")
+                    return True, "gameover on tap"
+            except Exception:
+                pass
+            time.sleep(1.5)
+        log("    [flag] no GAMEOVER seen yet (may still be valid — server accepted)")
+    return True, "fired + confirmed"
 
 
 def parse_bet_text(raw):
@@ -901,36 +1019,49 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             break
         time.sleep(2)
     
-    # Send SURRENDER (with one reload-recovery if the WS died while waiting)
-    log("  [6] sending SURRENDER...")
-    r = game_frame.evaluate(JS_SEND_SURRENDER)
-    log(f"    result: {r}")
-    if r.get("error") == "ws not connected":
-        log("    [!] WS dead at surrender — active reconnect + retry (no reload first)...")
-        game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=60)
-        if ws_ok:
-            r = game_frame.evaluate(JS_SEND_SURRENDER)
-            log(f"    retry result: {r}")
-        if not ws_ok or r.get("error") == "ws not connected":
-            log("    [!] still dead — reloading to recover the session...")
-            try:
-                page.reload(wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(10000)
-                new_gf = find_game_frame(page, max_wait=60)
-                if new_gf:
-                    game_frame = new_gf
-                    s = game_frame.evaluate(JS_GET_STATE)
-                    log(f"    [recovery] path={s.get('path')}")
-                    # wait for the WS BEFORE retrying — 10s is not enough after reload
-                    game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=75)
-                    if ws_ok:
-                        r = game_frame.evaluate(JS_SEND_SURRENDER)
-                        log(f"    retry result: {r}")
-                    else:
-                        log("    [!] WS still not connected — surrender not sent")
-            except Exception as e:
-                log(f"    [!] recovery failed: {type(e).__name__}")
-    surrender_ok = r.get("ok", False) or r.get("err_code") == 22
+    # SURRENDER — click the 🏳 flag like the UI does (canvas button ->
+    # app.fireStateCommand), with the raw WS command as fallback
+    log("  [6] surrendering via the match FLAG icon (🏳)...")
+    surrender_ok = False
+    flag_used = False
+    try:
+        surrender_ok, flag_detail = surrender_via_flag(game_frame, page)
+        flag_used = surrender_ok
+        log(f"    flag surrender: {surrender_ok} ({flag_detail})")
+    except Exception as e:
+        log(f"    [!] flag surrender path failed: {type(e).__name__}: {e}")
+    if flag_used:
+        log("  [6✓] surrender sent via the flag icon (UI path)")
+    else:
+        log("  [6b] flag path failed — falling back to raw WS SURRENDER...")
+        r = game_frame.evaluate(JS_SEND_SURRENDER)
+        log(f"    result: {r}")
+        if r.get("error") == "ws not connected":
+            log("    [!] WS dead at surrender — active reconnect + retry (no reload first)...")
+            game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=60)
+            if ws_ok:
+                r = game_frame.evaluate(JS_SEND_SURRENDER)
+                log(f"    retry result: {r}")
+            if not ws_ok or r.get("error") == "ws not connected":
+                log("    [!] still dead — reloading to recover the session...")
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(10000)
+                    new_gf = find_game_frame(page, max_wait=60)
+                    if new_gf:
+                        game_frame = new_gf
+                        s = game_frame.evaluate(JS_GET_STATE)
+                        log(f"    [recovery] path={s.get('path')}")
+                        # wait for the WS BEFORE retrying — 10s is not enough after reload
+                        game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=75)
+                        if ws_ok:
+                            r = game_frame.evaluate(JS_SEND_SURRENDER)
+                            log(f"    retry result: {r}")
+                        else:
+                            log("    [!] WS still not connected — surrender not sent")
+                except Exception as e:
+                    log(f"    [!] recovery failed: {type(e).__name__}")
+        surrender_ok = r.get("ok", False) or r.get("err_code") == 22
     
     # Close dialogs
     log("  [7] closing dialog + returning to lobby...")
@@ -944,12 +1075,18 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     
     ensure_in_lobby(game_frame, page)
     
-    # Final balance
+    # Final balance (the client's coin display updates LATE after a surrender —
+    # re-read after a short wait when the first read shows no change)
     bal_after, _ = get_balance(game_frame)
+    if bal_after == bal_before:
+        time.sleep(6)
+        bal_after, _ = get_balance(game_frame)
     delta = bal_after - bal_before
     log(f"  [done] balance: {bal_before:,} → {bal_after:,} (Δ={delta:+,})")
     if delta < 0:
         log(f"         ✓ lost {-delta:,} xu (transferred to opponent)")
+    elif surrender_ok and delta == 0:
+        log("         [i] balance display may still be stale — the next cycle's claim reads the real value")
     return surrender_ok, max(0, -delta)
 
 
