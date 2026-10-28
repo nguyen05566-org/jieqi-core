@@ -46,6 +46,27 @@ from playwright.sync_api import sync_playwright
 
 GAME_URL = "https://www.facebook.com/gaming/play/gomoku-vh"
 
+# Keep background/headless timers running so the client heartbeat (PING)
+# is never throttled and the server doesn't drop the WS session.
+EXTRA_LAUNCH_ARGS = [
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+]
+
+# Liveness probe: send PING on the game WS and report readyState
+JS_SEND_PING = """() => {
+    try {
+        if (!window.connection || !connection.ws) return {readyState: -1};
+        const rs = connection.ws.readyState;
+        if (rs === 1) {
+            const msg = new OutboundMessage("PING");
+            connection.send(msg, function(){});
+        }
+        return {readyState: rs};
+    } catch(e) { return {readyState: -2, error: e.toString()}; }
+}"""
+
 
 def parse_cookie_string(raw):
     out = []
@@ -650,7 +671,22 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         game_frame.evaluate(JS_INSTALL_WS_TAP)
         game_frame.evaluate(JS_CLEAR_TAP)
         deadline = time.time() + opponent_wait_seconds
+        last_ping = time.time()
+        ws_died = False
         while time.time() < deadline:
+            # keepalive: PING every ~30s so the server never drops the session
+            if time.time() - last_ping >= 30:
+                last_ping = time.time()
+                try:
+                    pr = game_frame.evaluate(JS_SEND_PING)
+                    if pr.get("readyState") != 1:
+                        log(f"    [!] WS readyState={pr.get('readyState')} — connection lost")
+                        ws_died = True
+                        break
+                except Exception as e:
+                    log(f"    [!] PING failed: {type(e).__name__} — connection lost")
+                    ws_died = True
+                    break
             msgs = game_frame.evaluate(JS_GET_TAP_SUMMARY)
             hit = [m for m in msgs if m.get("cmd") in WS_CMD_OPPONENT]
             if hit:
@@ -674,6 +710,18 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             time.sleep(3)
         if opp_joined:
             log("    → opponent joined!")
+        elif ws_died:
+            log("    [!] WS died mid-wait — reloading page to recover the session...")
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(10000)
+                new_gf = find_game_frame(page, max_wait=60)
+                if new_gf:
+                    game_frame = new_gf
+                    s = game_frame.evaluate(JS_GET_STATE)
+                    log(f"    [recovery] path={s.get('path')} (table may still exist server-side)")
+            except Exception as e:
+                log(f"    [!] recovery reload failed: {type(e).__name__}")
         else:
             log("    [!] no opponent joined within timeout")
     
@@ -836,7 +884,7 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
     try:
         browser.close()
     except: pass
-    browser = p.chromium.launch(headless=headless, args=al.stealth_launch_args(fp))
+    browser = p.chromium.launch(headless=headless, args=al.stealth_launch_args(fp) + EXTRA_LAUNCH_ARGS)
     ctx = browser.new_context(
         viewport=fp["viewport"], locale=fp["locale"],
         user_agent=fp["user_agent"], timezone_id=fp["timezone"],
@@ -923,7 +971,7 @@ def main():
 
     cycle_results = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
+        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp) + EXTRA_LAUNCH_ARGS)
         ctx = browser.new_context(
             viewport=fp["viewport"], locale=fp["locale"],
             user_agent=fp["user_agent"], timezone_id=fp["timezone"],
@@ -1003,7 +1051,7 @@ def main():
                         browser.close()
                     except: pass
                     try:
-                        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
+                        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp) + EXTRA_LAUNCH_ARGS)
                         ctx = browser.new_context(
                             viewport=fp["viewport"], locale=fp["locale"],
                             user_agent=fp["user_agent"], timezone_id=fp["timezone"],
