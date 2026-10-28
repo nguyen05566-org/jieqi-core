@@ -266,8 +266,10 @@ JS_CLICK_TAO = """() => {
 }"""
 
 # === WS tap: detect opponent joining via websocket ===
-# Heartbeat = len 2 / cmd 44. Any other message after table creation
-# means table activity (opponent joined / game started).
+# Wire format: [2-byte big-endian command id][payload] (see CMD_MAP, arena10k.py).
+# Heartbeat = PONG 300. Lobby noise = table-list refresh etc. — IGNORED.
+# Real table activity = PLAYER_ENTERED 406, START_MATCH 417, GAMEOVER 418,
+# ENTER_STATE 419, SET_TURN 420, SET_READY 434.
 JS_INSTALL_WS_TAP = """() => {
     if (window.__tap_installed) return true;
     window.__tap = [];
@@ -281,7 +283,11 @@ JS_INSTALL_WS_TAP = """() => {
             if (ev.data instanceof ArrayBuffer) bytes = Array.from(new Uint8Array(ev.data));
             else if (ev.data && ev.data.data) bytes = Array.from(new Uint8Array(ev.data.data));
         } catch(e) {}
-        if (bytes) window.__tap.push({ts: Date.now(), len: bytes.length, b1: bytes.length > 1 ? bytes[1] : null});
+        if (bytes) window.__tap.push({
+            ts: Date.now(), len: bytes.length,
+            b1: bytes.length > 1 ? bytes[1] : null,
+            cmd: bytes.length > 1 ? bytes[0] * 256 + bytes[1] : null,
+        });
         if (orig) return orig.call(ws, ev);
     };
     window.__tap_installed = true;
@@ -290,7 +296,7 @@ JS_INSTALL_WS_TAP = """() => {
 
 JS_CLEAR_TAP = "() => { window.__tap = []; return true; }"
 
-JS_GET_TAP_SUMMARY = "() => (window.__tap || []).map(m => ({len: m.len, b1: m.b1}))"
+JS_GET_TAP_SUMMARY = "() => (window.__tap || []).map(m => ({len: m.len, b1: m.b1, cmd: m.cmd}))"
 
 JS_ENTER_LOBBY_ROOM = """(lobbyPath) => new Promise((resolve) => {
     try {
@@ -620,16 +626,24 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     log("  [3] clicking Tạo (CREATE)...")
     game_frame.evaluate(JS_CLICK_TAO)
     time.sleep(5)
-    # Confirm WHERE the table was created (room must match the selected lobby)
+    # Confirm the selected room client-side. NOTE: the client only navigates
+    # into the table place (Lobby.caro.0.<id>) once the match actually starts;
+    # right after Tạo thisPath may still be 'Lobby'.
     try:
         tpath = game_frame.evaluate(JS_GET_STATE).get("path")
-        log(f"    table place: {tpath}")
-        if tpath and not str(tpath).startswith(str(lobby) + "."):
-            log(f"    [!] table NOT in {lobby} — wrong room!")
+        rid = game_frame.evaluate("() => window.roomId")
+        log(f"    table place: {tpath} (roomId={rid})")
+        if tpath and "." in str(tpath) and str(tpath).startswith(("Lobby.caro.", "Loby.caro.")):
+            room = str(tpath).split(".")[2]
+            if room != str(lobby).split(".")[-1]:
+                log(f"    [!] table in room {room}, wanted {lobby} — wrong room!")
     except Exception:
         pass
     
-    # Step 5: Wait for opponent — WS signal (non-heartbeat msg) or ready button
+    # Step 5: Wait for opponent — precise WS signals or ready button
+    # (see CMD_MAP: PLAYER_ENTERED 406, START_MATCH 417, GAMEOVER 418,
+    #  ENTER_STATE 419, SET_TURN 420, SET_READY 434)
+    WS_CMD_OPPONENT = {406, 417, 418, 419, 420, 434}
     opp_joined = False
     if wait_for_opponent:
         log(f"  [4] waiting for opponent (up to {opponent_wait_seconds}s)...")
@@ -638,11 +652,20 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         deadline = time.time() + opponent_wait_seconds
         while time.time() < deadline:
             msgs = game_frame.evaluate(JS_GET_TAP_SUMMARY)
-            # heartbeat = len 2 / cmd 44 — any other message = table activity
-            if any(m.get("len", 0) >= 3 and m.get("b1") != 44 for m in msgs):
-                log(f"    ✓ WS activity detected ({len(msgs)} msg) — opponent likely joined")
+            hit = [m for m in msgs if m.get("cmd") in WS_CMD_OPPONENT]
+            if hit:
+                log(f"    ✓ table activity: {hit[:4]} — opponent joined")
                 opp_joined = True
                 break
+            # client navigates into the table place once the match starts
+            try:
+                p = game_frame.evaluate(JS_GET_STATE).get("path")
+                if p and str(p).startswith(str(lobby) + "."):
+                    log(f"    ✓ match place: {p} — opponent joined")
+                    opp_joined = True
+                    break
+            except Exception:
+                pass
             rdy = game_frame.evaluate(JS_FIND_BAT_DAU)
             if rdy.get("found"):
                 log(f"    ✓ ready button appeared: {rdy.get('text')}")
@@ -657,7 +680,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     # Step 6: Check if game started, then surrender
     # Click Bắt đầu if available
     log("  [5] looking for Bắt đầu / Sẵn sàng (ready) button...")
-    for i in range(10):
+    for i in range(30):
         r = game_frame.evaluate(JS_FIND_BAT_DAU)
         if r.get("found"):
             log(f"    ✓ Bắt đầu found (text: {r.get('text')})")
