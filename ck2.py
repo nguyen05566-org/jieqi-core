@@ -8,12 +8,14 @@ Flow (each cycle):
        to creating a table (da co xu 50k-55k thi tao ban, khong can claim)
      - Else -> claim reward until balance reaches [claim_min, claim_max]
        (stops early if server returns "no response" = claim rejected)
-  2. Select lobby "Lobby.caro.0" (caro0) via place.enter and create
-     the table there with bet (default 40k)
-  3. Wait for an opponent to join the table
-  4. Opponent joined -> press ready ("Bat dau" / "San sang") -> send SURRENDER
-     -> lose the bet to the opponent
+  2. Create the table with bet (default 40k) in the game's DEFAULT room —
+     no lobby/room switching (khong ep Lobby.caro.0 nua; pass --lobby caro0
+     if you ever want to force a specific room again)
+  3. Wait for an opponent to join the table (default 3 minutes / 180s)
+  4. Opponent joined (or timeout) -> press ready ("Bat dau" / "San sang")
+     -> send SURRENDER -> lose the bet
   5. Back to lobby -> balance dropped below 50k -> next cycle claims again
+     (sau khi surrender se claim lai o chu ky ke tiep)
 
 Removed: the old "find target table by name/id + join target" logic.
 The bot now only creates its own table and surrenders to whoever joins.
@@ -27,7 +29,8 @@ Usage:
   Useful options:
     --claim-min 50000 --claim-max 55000    claim window (default 50k-55k)
     --bet-amount 40000                     bet for the created table
-    --opponent-wait-seconds 120            wait time for opponent to join
+    --opponent-wait-seconds 180            wait time for opponent (default 3 min)
+    --lobby caro0                          force a room (default: game default room)
     HEADLESS=false python3 ck2.py          show browser window (local run)
 """
 import argparse
@@ -54,7 +57,11 @@ EXTRA_LAUNCH_ARGS = [
     "--disable-renderer-backgrounding",
 ]
 
-# Liveness probe: send PING on the game WS and report readyState
+# Liveness probe: send PING on the game WS and report readyState.
+# NOTE: kept for reference — DO NOT use it periodically. Manual PINGs correlate
+# with the server dropping the socket after 20-60s (probe_ws4). The client has
+# its own keepalive (PONG every ~15s); passive monitoring is stable for 3+ min
+# (probe_ws5).
 JS_SEND_PING = """() => {
     try {
         if (!window.connection || !connection.ws) return {readyState: -1};
@@ -65,6 +72,33 @@ JS_SEND_PING = """() => {
         }
         return {readyState: rs};
     } catch(e) { return {readyState: -2, error: e.toString()}; }
+}"""
+
+# Passive socket state — NO traffic. Use this for monitoring.
+JS_WS_STATE = """() => {
+    try {
+        if (!window.connection) return {readyState: -1};
+        const ws = window.connection.ws;
+        return {readyState: ws ? ws.readyState : -1,
+                active: !!window.connection.wsIsActive};
+    } catch(e) { return {readyState: -2, error: e.toString()}; }
+}"""
+
+# Active recovery: the client's socket (connection.ws, target wss://vh9.me/ws/gameServer)
+# can drop and the client does NOT always re-establish it on its own —
+# connection.ws stays null forever. It exposes connection.connect() — call it.
+JS_WS_ENSURE = """() => {
+    try {
+        if (!window.connection) return {ok: false, error: 'no connection object'};
+        const c = window.connection;
+        if (c.ws && c.ws.readyState === 1) return {ok: true, rs: 1, already: true};
+        if (c.ws && c.ws.readyState === 0) return {ok: true, rs: 0, connecting: true};
+        if (typeof c.connect === 'function') {
+            try { c.connect(); return {ok: true, called: true}; }
+            catch(e) { return {ok: false, error: 'connect threw: ' + e.toString()}; }
+        }
+        return {ok: false, error: 'no connect method'};
+    } catch(e) { return {ok: false, error: e.toString()}; }
 }"""
 
 
@@ -182,13 +216,13 @@ JS_CLICK_CREATE = """() => {
     if (b) b.click();
 }"""
 
-# Ready button — pressed after the opponent joins
+# Ready button — pressed after the opponent joins (vi + en UI)
 JS_FIND_BAT_DAU = """() => {
     for (const b of document.querySelectorAll('button, input[type=button], [role=button], a')) {
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
         const t = (b.innerText || b.textContent || b.value || '').trim();
-        if (t.includes('Bắt đầu') || t.includes('Sẵn sàng')) return {found: true, text: t};
+        if (/^(Bắt đầu|Sẵn sàng|Start|Ready)\b/i.test(t) && t.length < 30) return {found: true, text: t};
     }
     return {found: false};
 }"""
@@ -198,7 +232,7 @@ JS_CLICK_BAT_DAU = """() => {
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
         const t = (b.innerText || b.textContent || b.value || '').trim();
-        if (t.includes('Bắt đầu') || t.includes('Sẵn sàng')) { b.click(); return {clicked: true, text: t}; }
+        if (/^(Bắt đầu|Sẵn sàng|Start|Ready)\b/i.test(t) && t.length < 30) { b.click(); return {clicked: true, text: t}; }
     }
     return {clicked: false};
 }"""
@@ -238,7 +272,7 @@ JS_CLICK_OK = """() => {
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
         const t = (b.innerText || b.textContent || b.value || '').trim();
-        if (/^(OK|Đồng ý|Tiếp tục|Đóng|Chơi lại|Về lobby|Về phòng chờ)$/i.test(t)) {
+        if (/^(OK|Đồng ý|Tiếp tục|Đóng|Chơi lại|Về lobby|Về phòng chờ|Continue|Play again|Back to lobby|Close)$/i.test(t)) {
             b.click(); return {clicked: true, text: t};
         }
     }
@@ -276,14 +310,16 @@ JS_CLICK_MINUS = """() => {
 }"""
 
 JS_CLICK_TAO = """() => {
-    // "Tạo" (Create) button of the create-table panel
+    // "Tạo" (vi) / "Create" (en) button of the create-table panel
     for (const b of document.querySelectorAll('a, button, input')) {
-        if (b.offsetParent !== null && (b.innerText || b.value || '').trim() === 'Tạo') { b.click(); return true; }
+        if (b.offsetParent === null) continue;
+        const t = (b.innerText || b.value || '').trim();
+        if (/^(Tạo|Create)$/i.test(t)) { b.click(); return {clicked: true, text: t}; }
     }
     // Fallback: old CREATE input
     const b = document.querySelector('input[name="CREATE"]');
-    if (b) { b.click(); return true; }
-    return false;
+    if (b) { b.click(); return {clicked: true, text: 'input[CREATE]'}; }
+    return {clicked: false};
 }"""
 
 # === WS tap: detect opponent joining via websocket ===
@@ -392,25 +428,31 @@ def ensure_in_lobby(game_frame, page, max_attempts=3):
     return path in fb_lobby_paths or path == "Lobby"
 
 
-DEFAULT_GOMOKU_LOBBY = "Lobby.caro.0"
+# "" = use the game's DEFAULT room (no room switch before creating the table).
+# Pass --lobby caro0 (or 0/1/2/3) to force a specific room again.
+DEFAULT_GOMOKU_LOBBY = ""
 
 
 def normalize_lobby(raw):
-    """Normalize user lobby input to 'Lobby.caro.<n>' (default caro0).
+    """Normalize lobby input.
 
-    Accepts: 'lobby.caro0', 'Loby.caro.0', 'caro0', '0', 'Lobby.caro.0', ...
+    '' / 'default' / 'auto' / 'macdinh' -> ''  = game's default room (no switch)
+    'caro0', 'lobby.caro.0', '0', 'Lobby.caro.0', ... -> 'Lobby.caro.<n>'
+    Unrecognized input -> '' (default room) instead of failing.
     """
-    if not raw:
-        return DEFAULT_GOMOKU_LOBBY
+    if raw is None:
+        return ""
     s = str(raw).strip().lower().replace(" ", "")
-    m = re.search(r"caro[._]?0*(\d+)$", s) or re.search(r"(\d+)$", s)
+    if not s or s in ("default", "auto", "none", "macdinh"):
+        return ""
+    m = re.search(r"caro[._]?0*(\d+)$", s) or re.search(r"^(\d+)$", s)
     if m:
         return f"Lobby.caro.{int(m.group(1))}"
-    return DEFAULT_GOMOKU_LOBBY
+    return ""
 
 
-def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attempts=6):
-    """Select the target lobby room (default 'Lobby.caro.0' = caro0 / Hawaii).
+def goto_lobby_path(game_frame, page, lobby_path="Lobby.caro.0", max_attempts=6):
+    """Select a specific lobby room via WS ENTER_PLACE (only used when --lobby is set).
 
     The browser game keeps place.thisPath == 'Lobby' while browsing rooms —
     the selected room lives in window.roomId. The server-side place is switched
@@ -464,6 +506,47 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
     log(f"    [!] could not confirm {lobby_path} (final path={final_path})")
     return False
 
+
+
+def wait_ws_connected(game_frame, page, max_wait=60):
+    """Wait for the game WS to be OPEN — passively, with gentle nudges.
+
+    Lessons from probes (see scripts/probe_ws4.py, probe_ws5.py):
+    - the client's own keepalive holds the socket up for minutes — do NOT send
+      manual PINGs (server dropped sockets 20-60s after we started PINGing);
+    - when the socket IS down, connection.connect() re-establishes it, but the
+      server rate-limits rapid reconnect attempts — nudge at most 1/20s.
+    Returns (game_frame, connected_bool); game_frame may be re-found if lost.
+    """
+    deadline = time.time() + max_wait
+    gf = game_frame
+    announced = False
+    last_connect = 0.0
+    while time.time() < deadline:
+        try:
+            st = gf.evaluate(JS_WS_STATE)
+            if st.get("readyState") == 1:
+                if announced:
+                    log("    ✓ WS connected")
+                return gf, True
+            if not announced:
+                announced = True
+                log(f"    [ws] readyState={st.get('readyState')} — waiting/reconnecting...")
+            # gentle reconnect nudge — max once per 20s (server rate-limit)
+            if time.time() - last_connect >= 20:
+                last_connect = time.time()
+                try:
+                    er = gf.evaluate(JS_WS_ENSURE)
+                    if er.get("called"):
+                        log("    [ws] called connection.connect()")
+                except Exception:
+                    pass
+        except Exception:
+            new_gf = find_game_frame(page, max_wait=5)
+            if new_gf:
+                gf = new_gf
+        time.sleep(3)
+    return gf, False
 
 
 def parse_bet_text(raw):
@@ -545,6 +628,12 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
         # Send claim
         result = trigger_and_claim(game_frame)
 
+        if result.get("error") == "ws not connected":
+            log(f"  [t={i}] WS down — actively reconnecting before next claim...")
+            game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=45)
+            if ws_ok:
+                continue  # retry claim immediately
+
         if result.get("success") and result.get("amount", 0) > 0:
             amount = result["amount"]
             claims_ok += 1
@@ -578,17 +667,17 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
 
 
 def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_opponent=True, 
-                                    opponent_wait_seconds=120, min_balance=1000,
-                                    lobby=DEFAULT_GOMOKU_LOBBY):
+                                    opponent_wait_seconds=180, min_balance=1000,
+                                    lobby=""):
     """Create own table with specified bet, wait for opponent, then SURRENDER.
     
     Flow:
       0. Refresh page
-      1. Select lobby (default: Lobby.caro.0 = caro0)
+      1. Stay in the game's DEFAULT room (no lobby switch unless `lobby` given)
       2. Open create table panel
       3. Set bet_amount xu via the -/+ stepper (panel has no radios)
       4. Create table (button "Tạo")
-      5. Wait for opponent (WS signal or ready button)
+      5. Wait for opponent (WS signal or ready button, default 3 minutes)
       6. Press ready (Bắt đầu / Sẵn sàng) then SURRENDER
     
      Returns (success, balance_lost).
@@ -621,15 +710,34 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         # Re-fetch balance
         bal_before, _ = get_balance(game_frame)
         log(f"    balance after refresh: {bal_before:,}")
+        # CRITICAL: after reload the client takes ~15-40s to establish the WS.
+        # Creating a table before that leaves the table without an owner socket.
+        game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=75)
+        if not ws_ok:
+            log("    [!] WS never connected after refresh — aborting this table")
+            return False, 0
     else:
         log("    [!] no game frame after refresh")
         return False, 0
     
-    # Step 1: Select the caro0 lobby (Lobby.caro.0) before creating the table
-    log(f"  [0.5] selecting lobby {lobby}...")
-    if not goto_lobby_path(game_frame, page, lobby_path=lobby):
-        log("    [!] couldn't select the lobby — trying ensure_in_lobby instead")
+    # Step 1: Lobby — DEFAULT = stay in whatever room the client opened with
+    # (no ENTER_PLACE room switch). Only switch if a specific lobby was forced.
+    if lobby:
+        log(f"  [0.5] selecting lobby {lobby}...")
+        if not goto_lobby_path(game_frame, page, lobby_path=lobby):
+            log("    [!] couldn't select the lobby — trying ensure_in_lobby instead")
+            ensure_in_lobby(game_frame, page)
+    else:
+        log("  [0.5] lobby: using game DEFAULT room (no room switch)")
         ensure_in_lobby(game_frame, page)
+    
+    # Step 1.5: make sure the WS is OPEN before clicking Tạo — without the
+    # socket the creation request never reaches the server (balance unchanged,
+    # no table). connection.ws can be null even while the UI looks alive.
+    game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=60)
+    if not ws_ok:
+        log("    [!] WS still down before Tạo — aborting this table")
+        return False, 0
     
     # Step 2: Open create table panel
     log("  [1] opening create table panel...")
@@ -646,17 +754,53 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     time.sleep(0.5)
     
     # Step 4: Create table
-    log("  [3] clicking Tạo (CREATE)...")
-    game_frame.evaluate(JS_CLICK_TAO)
-    time.sleep(5)
+    log("  [3] clicking Tạo/Create (CREATE)...")
+    tao_r = game_frame.evaluate(JS_CLICK_TAO)
+    log(f"    click result: {tao_r}")
+    time.sleep(6)
+    # Verify the table was actually created: after Create succeeds the client
+    # navigates INTO the table place (e.g. 'Lobby.caro.0.9239'). NOTE: the bet
+    # is NOT escrowed at creation time (it is deducted when the match starts),
+    # so balance-based checks give false negatives.
+    import re as _re
+    created = False
+    for _ in range(20):
+        try:
+            p = str(game_frame.evaluate(JS_GET_STATE).get("path") or "")
+        except Exception:
+            p = ""
+        if _re.match(r"^Lobby(caro)?\.\d+\.\d+$", p):
+            created = True
+            break
+        time.sleep(1)
+    if not created:
+        log(f"    [!] no table place detected after Create — retrying once (WS check first)...")
+        game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=50)
+        if ws_ok:
+            game_frame.evaluate(JS_CREATE_TABLE)
+            time.sleep(2)
+            set_bet_stepper(game_frame, bet_amount)
+            time.sleep(0.5)
+            tao_r2 = game_frame.evaluate(JS_CLICK_TAO)
+            log(f"    retry click result: {tao_r2}")
+            for _ in range(20):
+                try:
+                    p = str(game_frame.evaluate(JS_GET_STATE).get("path") or "")
+                except Exception:
+                    p = ""
+                if _re.match(r"^Lobby(caro)?\.\d+\.\d+$", p):
+                    created = True
+                    break
+                time.sleep(1)
+    log(f"    table creation: {'✓ verified (in table place)' if created else '⚠ unverified — proceeding anyway'}")
     # Confirm the selected room client-side. NOTE: the client only navigates
-    # into the table place (Lobby.caro.0.<id>) once the match actually starts;
+    # into the table place (Lobby.caro.X.<id>) once the match actually starts;
     # right after Tạo thisPath may still be 'Lobby'.
     try:
         tpath = game_frame.evaluate(JS_GET_STATE).get("path")
         rid = game_frame.evaluate("() => window.roomId")
         log(f"    table place: {tpath} (roomId={rid})")
-        if tpath and "." in str(tpath) and str(tpath).startswith(("Lobby.caro.", "Loby.caro.")):
+        if lobby and tpath and "." in str(tpath) and str(tpath).startswith(("Lobby.caro.", "Loby.caro.")):
             room = str(tpath).split(".")[2]
             if room != str(lobby).split(".")[-1]:
                 log(f"    [!] table in room {room}, wanted {lobby} — wrong room!")
@@ -673,20 +817,27 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         game_frame.evaluate(JS_INSTALL_WS_TAP)
         game_frame.evaluate(JS_CLEAR_TAP)
         deadline = time.time() + opponent_wait_seconds
-        last_ping = time.time()
+        last_ws_check = time.time()
         ws_died = False
         while time.time() < deadline:
-            # keepalive: PING every ~30s so the server never drops the session
-            if time.time() - last_ping >= 30:
-                last_ping = time.time()
+            # passive socket monitoring every ~10s — NO manual PING (the
+            # client's own keepalive holds the connection; our PINGs made the
+            # server drop it, see probe_ws4/probe_ws5)
+            if time.time() - last_ws_check >= 10:
+                last_ws_check = time.time()
                 try:
-                    pr = game_frame.evaluate(JS_SEND_PING)
-                    if pr.get("readyState") != 1:
-                        log(f"    [!] WS readyState={pr.get('readyState')} — connection lost")
-                        ws_died = True
-                        break
+                    st = game_frame.evaluate(JS_WS_STATE)
+                    if st.get("readyState") != 1:
+                        log(f"    [!] WS down (rs={st.get('readyState')}) — reconnecting gently...")
+                        game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=50)
+                        if ws_ok:
+                            # new socket -> re-install the tap
+                            game_frame.evaluate(JS_INSTALL_WS_TAP)
+                            game_frame.evaluate(JS_CLEAR_TAP)
+                        # even if reconnect failed, keep polling the DOM —
+                        # the table still exists server-side
                 except Exception as e:
-                    log(f"    [!] PING failed: {type(e).__name__} — connection lost")
+                    log(f"    [!] WS check failed: {type(e).__name__}")
                     ws_died = True
                     break
             msgs = game_frame.evaluate(JS_GET_TAP_SUMMARY)
@@ -698,7 +849,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             # client navigates into the table place once the match starts
             try:
                 p = game_frame.evaluate(JS_GET_STATE).get("path")
-                if p and str(p).startswith(str(lobby) + "."):
+                if lobby and p and str(p).startswith(str(lobby) + "."):
                     log(f"    ✓ match place: {p} — opponent joined")
                     opp_joined = True
                     break
@@ -722,6 +873,12 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
                     game_frame = new_gf
                     s = game_frame.evaluate(JS_GET_STATE)
                     log(f"    [recovery] path={s.get('path')} (table may still exist server-side)")
+                    # wait for the client WS to come up before continuing
+                    game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=75)
+                    if ws_ok:
+                        game_frame.evaluate(JS_INSTALL_WS_TAP)
+                else:
+                    log("    [!] no game frame after recovery reload")
             except Exception as e:
                 log(f"    [!] recovery reload failed: {type(e).__name__}")
         else:
@@ -730,6 +887,8 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     # Step 6: Check if game started, then surrender
     # Click Bắt đầu if available
     log("  [5] looking for Bắt đầu / Sẵn sàng (ready) button...")
+    # make sure WS is alive for the SURRENDER command
+    game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=30)
     # long scan if an opponent is at the table, quick scan otherwise
     # (the server drops idle sessions a few minutes after table creation)
     ready_scan = 30 if opp_joined else 5
@@ -747,19 +906,30 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     r = game_frame.evaluate(JS_SEND_SURRENDER)
     log(f"    result: {r}")
     if r.get("error") == "ws not connected":
-        log("    [!] WS dead at surrender — reloading to recover the session...")
-        try:
-            page.reload(wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(10000)
-            new_gf = find_game_frame(page, max_wait=60)
-            if new_gf:
-                game_frame = new_gf
-                s = game_frame.evaluate(JS_GET_STATE)
-                log(f"    [recovery] path={s.get('path')}")
-                r = game_frame.evaluate(JS_SEND_SURRENDER)
-                log(f"    retry result: {r}")
-        except Exception as e:
-            log(f"    [!] recovery failed: {type(e).__name__}")
+        log("    [!] WS dead at surrender — active reconnect + retry (no reload first)...")
+        game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=60)
+        if ws_ok:
+            r = game_frame.evaluate(JS_SEND_SURRENDER)
+            log(f"    retry result: {r}")
+        if not ws_ok or r.get("error") == "ws not connected":
+            log("    [!] still dead — reloading to recover the session...")
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(10000)
+                new_gf = find_game_frame(page, max_wait=60)
+                if new_gf:
+                    game_frame = new_gf
+                    s = game_frame.evaluate(JS_GET_STATE)
+                    log(f"    [recovery] path={s.get('path')}")
+                    # wait for the WS BEFORE retrying — 10s is not enough after reload
+                    game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=75)
+                    if ws_ok:
+                        r = game_frame.evaluate(JS_SEND_SURRENDER)
+                        log(f"    retry result: {r}")
+                    else:
+                        log("    [!] WS still not connected — surrender not sent")
+            except Exception as e:
+                log(f"    [!] recovery failed: {type(e).__name__}")
     surrender_ok = r.get("ok", False) or r.get("err_code") == 22
     
     # Close dialogs
@@ -951,8 +1121,9 @@ def main():
                         help="Test mode: skip Phase 1 (claim) entirely — go straight to table creation")
     parser.add_argument("--bet-amount", type=int, default=int(os.environ.get("BET_AMOUNT", "40000")),
                         help="Bet amount for the created table (default: 40000)")
-    parser.add_argument("--lobby", default=os.environ.get("LOBBY", DEFAULT_GOMOKU_LOBBY),
-                        help="Lobby to select before creating the table (default: Lobby.caro.0 = caro0)")
+    parser.add_argument("--lobby", default=os.environ.get("LOBBY", "default"),
+                        help="Lobby room to select before creating the table "
+                             "(default: game's DEFAULT room — no switch; e.g. --lobby caro0 to force Lobby.caro.0)")
     parser.add_argument("--min-balance", type=int, default=int(os.environ.get("MIN_BALANCE", "1000")),
                         help="Stop if balance drops below this (default: 1000)")
     parser.add_argument("--max-claims-per-cycle", type=int, default=int(os.environ.get("MAX_CLAIMS_PER_CYCLE", "200")),
@@ -964,8 +1135,8 @@ def main():
     parser.add_argument("--wait-for-opponent", type=lambda v: v.lower() in ('true', '1', 'yes'),
                         default=os.environ.get("WAIT_FOR_OPPONENT", "true").lower() == "true",
                         help="Wait for opponent to join before ready+surrender")
-    parser.add_argument("--opponent-wait-seconds", type=int, default=int(os.environ.get("OPPONENT_WAIT_SECONDS", "120")),
-                        help="Seconds to wait for opponent after creating the table (default: 120)")
+    parser.add_argument("--opponent-wait-seconds", type=int, default=int(os.environ.get("OPPONENT_WAIT_SECONDS", "180")),
+                        help="Seconds to wait for opponent after creating the table (default: 180 = 3 minutes)")
     parser.add_argument("--headless", default=os.environ.get("HEADLESS", "true").lower() == "true",
                         action="store_true", help="Run headless")
     args = parser.parse_args()
@@ -986,7 +1157,7 @@ def main():
     log(f"[fp] UA={fp['user_agent'][:50]}... viewport={fp['viewport']}")
     log(f"[config] claim_min={args.claim_min:,}, claim_max={args.claim_max:,}")
     log(f"         bet_amount={args.bet_amount:,}, cycles={args.cycles}, headless={args.headless}")
-    log(f"         lobby={args.lobby}")
+    log(f"         lobby={args.lobby or '(game default room)'}, opponent_wait={args.opponent_wait_seconds}s")
 
     cycle_results = []
     with sync_playwright() as p:
@@ -1039,6 +1210,13 @@ def main():
                 browser.close()
             except: pass
             return 1
+
+        # The socket (connection.ws -> wss://vh9.me/ws/gameServer) may be down
+        # right after boot (client does not always reconnect by itself).
+        # Actively re-establish it before the first cycle.
+        game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=90)
+        if not ws_ok:
+            log("[init] [!] WS could not be established — cycles may fail")
 
         for cycle_num in range(1, args.cycles + 1):
             log(f"\n{'#' * 60}")
