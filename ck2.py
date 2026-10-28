@@ -233,40 +233,63 @@ JS_GO_LOBBY = """() => {
 
 # === Create table + wait for opponent (reverse surrender) ===
 
-JS_SELECT_BET_BY_VALUE = """(betValue) => {
-    // Select radio button by displayed value (e.g., 40000, 10000, etc.)
-    const betValueStr = String(betValue);
-    let radio = null;
-    // Try matching by value attribute
-    const radios = document.querySelectorAll('input[type="radio"]');
-    for (const r of radios) {
-        const val = (r.value || '').toString();
-        if (val === betValueStr || val.replace(/[^\\d]/g, '') === betValueStr) {
-            radio = r; break;
-        }
+# === Create-table bet stepper ===
+# This game's create-table panel has NO radios — only a -/+ stepper + "Tạo".
+# Bet ladder: 100, 200, 400, 1000, 2000, 4000, 10k, 20k, 40k, ...
+# (display switches to "10k" style above 4000)
+JS_READ_BET_RAW = "() => { const l = document.querySelector('.entry label'); return l ? l.innerText.trim() : null; }"
+
+JS_CLICK_PLUS = """() => {
+    for (const b of document.querySelectorAll('a, button, input')) {
+        if (b.offsetParent !== null && (b.innerText || b.value || '').trim() === '+') { b.click(); return true; }
     }
-    // Try matching by nearby label text
-    if (!radio) {
-        for (const r of radios) {
-            const label = r.closest('label') || document.querySelector('label[for=\"' + r.id + '\"]');
-            if (label && label.innerText.includes(betValueStr)) { radio = r; break; }
-        }
-    }
-    if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change', {bubbles:true})); return {found: true, id: radio.id}; }
-    return {found: false};
+    return false;
 }"""
 
-JS_GET_TABLE_INFO = """() => ({
-    playerCount: document.querySelectorAll('.player-cell, .seat-player, [class*="player"]').length,
-    seatInfo: (() => {
-        const seats = [];
-        document.querySelectorAll('.seat, .player-slot, [class*="seat"]').forEach(s => {
-            seats.push({text: (s.innerText || '').trim(), visible: s.offsetParent !== null});
-        });
-        return seats;
-    })(),
-    gameText: document.body ? document.body.innerText.slice(0, 300) : '',
-})"""
+JS_CLICK_MINUS = """() => {
+    for (const b of document.querySelectorAll('a, button, input')) {
+        if (b.offsetParent !== null && (b.innerText || b.value || '').trim() === '-') { b.click(); return true; }
+    }
+    return false;
+}"""
+
+JS_CLICK_TAO = """() => {
+    // "Tạo" (Create) button of the create-table panel
+    for (const b of document.querySelectorAll('a, button, input')) {
+        if (b.offsetParent !== null && (b.innerText || b.value || '').trim() === 'Tạo') { b.click(); return true; }
+    }
+    // Fallback: old CREATE input
+    const b = document.querySelector('input[name="CREATE"]');
+    if (b) { b.click(); return true; }
+    return false;
+}"""
+
+# === WS tap: detect opponent joining via websocket ===
+# Heartbeat = len 2 / cmd 44. Any other message after table creation
+# means table activity (opponent joined / game started).
+JS_INSTALL_WS_TAP = """() => {
+    if (window.__tap_installed) return true;
+    window.__tap = [];
+    const ws = window.connection && window.connection.ws;
+    if (!ws) return false;
+    const orig = ws.onmessage;
+    ws.binaryType = 'arraybuffer';
+    ws.onmessage = function(ev) {
+        let bytes = null;
+        try {
+            if (ev.data instanceof ArrayBuffer) bytes = Array.from(new Uint8Array(ev.data));
+            else if (ev.data && ev.data.data) bytes = Array.from(new Uint8Array(ev.data.data));
+        } catch(e) {}
+        if (bytes) window.__tap.push({ts: Date.now(), len: bytes.length, b1: bytes.length > 1 ? bytes[1] : null});
+        if (orig) return orig.call(ws, ev);
+    };
+    window.__tap_installed = true;
+    return true;
+}"""
+
+JS_CLEAR_TAP = "() => { window.__tap = []; return true; }"
+
+JS_GET_TAP_SUMMARY = "() => (window.__tap || []).map(m => ({len: m.len, b1: m.b1}))"
 
 JS_ENTER_LOBBY_PATH = """(lobbyPath) => {
     try {
@@ -281,18 +304,6 @@ JS_ENTER_LOBBY_PATH = """(lobbyPath) => {
         return {entered: false, error: 'place.enterPlace not found'};
     } catch(e) { return {entered: false, error: e.toString()}; }
 }"""
-
-JS_FIND_PLAYER_COUNT_IN_TABLE = r"""() => {
-    // Look for player count indicators in the game UI
-    const text = document.body ? document.body.innerText : '';
-    // Gomoku typically shows player count like "1/2 players" or similar
-    const m = text.match(/(\d+)\s*[/\u2044]\s*2/);
-    if (m) { return {count: parseInt(m[1]), text: m[0]}; }
-    // Also check for seat elements
-    const occupied = document.querySelectorAll('.seat-occupied, [class*="seat"][class*="occupied"], .player-cell').length;
-    return {count: occupied, text: 'unknown', method: 'seat'};
-}"""
-
 
 def find_game_frame(page, max_wait=60):
     deadline = time.time() + max_wait
@@ -392,6 +403,35 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
     return False
 
 
+def parse_bet_text(raw):
+    """Parse bet display like '100', '40k', '2m' -> int xu."""
+    if not raw:
+        return None
+    s = str(raw).strip().lower().replace(',', '').replace('.', '').replace(' ', '')
+    try:
+        if s.endswith('k'):
+            return int(float(s[:-1]) * 1000)
+        if s.endswith('m'):
+            return int(float(s[:-1]) * 1000000)
+        return int(float(s))
+    except Exception:
+        digits = ''.join(ch for ch in str(raw) if ch.isdigit())
+        return int(digits) if digits else None
+
+
+def set_bet_stepper(game_frame, target, max_clicks=40):
+    """Adjust the create-panel bet stepper (-/+) until displayed bet == target."""
+    for _ in range(max_clicks):
+        bet = parse_bet_text(game_frame.evaluate(JS_READ_BET_RAW))
+        if bet is None:
+            return None
+        if bet == target:
+            return bet
+        game_frame.evaluate(JS_CLICK_PLUS if bet < target else JS_CLICK_MINUS)
+        time.sleep(0.5)
+    return parse_bet_text(game_frame.evaluate(JS_READ_BET_RAW))
+
+
 def trigger_and_claim(game_frame):
     """Send VIDEO_REWARD claim — matches ck_new.py's trigger_and_claim()."""
     # Create table (triggers "enough coin" alert)
@@ -482,9 +522,9 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
       0. Refresh page
       1. Navigate to Loby.caro.0
       2. Open create table panel
-      3. Select bet_amount xu
-      4. Create table
-      5. Wait for opponent to join (if wait_for_opponent)
+      3. Set bet_amount xu via the -/+ stepper (panel has no radios)
+      4. Create table (button "Tạo")
+      5. Wait for opponent (WS signal or ready button)
       6. Press ready (Bắt đầu / Sẵn sàng) then SURRENDER
     
      Returns (success, balance_lost).
@@ -532,43 +572,44 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     game_frame.evaluate(JS_CREATE_TABLE)
     time.sleep(2)
     
-    # Step 3: Select bet amount
-    log(f"  [2] selecting bet: {bet_amount:,} xu")
-    r = game_frame.evaluate(JS_SELECT_BET_BY_VALUE, bet_amount)
-    log(f"    result: {r}")
-    if not r.get("found"):
-        log(f"    [!] bet {bet_amount:,} not found, trying radio_11 fallback")
-        game_frame.evaluate(JS_SELECT_RADIO_11)
+    # Step 3: Select bet amount via the -/+ stepper
+    log(f"  [2] selecting bet via -/+ stepper: {bet_amount:,} xu")
+    bet_set = set_bet_stepper(game_frame, bet_amount)
+    if bet_set != bet_amount:
+        log(f"    [!] couldn't set bet to {bet_amount:,} (got {bet_set}) — aborting table creation")
+        return False, 0
+    log(f"    ✓ bet set to {bet_set:,} xu")
     time.sleep(0.5)
     
     # Step 4: Create table
-    log("  [3] clicking CREATE...")
-    game_frame.evaluate(JS_CLICK_CREATE)
+    log("  [3] clicking Tạo (CREATE)...")
+    game_frame.evaluate(JS_CLICK_TAO)
     time.sleep(5)
     
-    # Step 5: Wait for opponent (if requested)
+    # Step 5: Wait for opponent — WS signal (non-heartbeat msg) or ready button
+    opp_joined = False
     if wait_for_opponent:
         log(f"  [4] waiting for opponent (up to {opponent_wait_seconds}s)...")
+        game_frame.evaluate(JS_INSTALL_WS_TAP)
+        game_frame.evaluate(JS_CLEAR_TAP)
         deadline = time.time() + opponent_wait_seconds
         while time.time() < deadline:
-            # Check if game has started (opponent joined + started)
-            table_info = game_frame.evaluate(JS_GET_TABLE_INFO)
-            log(f"    table_info: {table_info}")
-            
-            # Check player count
-            player_count = game_frame.evaluate(JS_FIND_PLAYER_COUNT_IN_TABLE)
-            log(f"    player_count: {player_count}")
-            
-            # If player count is 2+, opponent has joined
-            count = player_count.get("count", 0)
-            if count >= 2:
-                log(f"    ✓ opponent joined ({count} players)")
+            msgs = game_frame.evaluate(JS_GET_TAP_SUMMARY)
+            # heartbeat = len 2 / cmd 44 — any other message = table activity
+            if any(m.get("len", 0) >= 3 and m.get("b1") != 44 for m in msgs):
+                log(f"    ✓ WS activity detected ({len(msgs)} msg) — opponent likely joined")
+                opp_joined = True
                 break
-            
-            time.sleep(5)
+            rdy = game_frame.evaluate(JS_FIND_BAT_DAU)
+            if rdy.get("found"):
+                log(f"    ✓ ready button appeared: {rdy.get('text')}")
+                opp_joined = True
+                break
+            time.sleep(3)
+        if opp_joined:
+            log("    → opponent joined!")
         else:
             log("    [!] no opponent joined within timeout")
-            # Try to start game anyway if auto-start is available
     
     # Step 6: Check if game started, then surrender
     # Click Bắt đầu if available
@@ -661,7 +702,9 @@ def _run_cycle(args, game_frame, page, cycle_num, cycle_results):
 
     # PHASE 1: skip claim if balance is already in [claim_min, claim_max]
     final_bal, _ = get_balance(game_frame)
-    if final_bal >= args.claim_min:
+    if getattr(args, "skip_claim", False):
+        log(f"\n=== Phase 1: SKIP CLAIM (--skip-claim test mode, balance: {final_bal:,}) ===")
+    elif final_bal >= args.claim_min:
         log(f"\n=== Phase 1: SKIP CLAIM (balance {final_bal:,} already >= {args.claim_min:,}) ===")
         log("    enough xu — going straight to table creation")
     else:
@@ -769,6 +812,9 @@ def main():
                         help="Skip claiming if balance >= this; else claim until balance >= this (default: 50000)")
     parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "55000")),
                         help="Hard stop claiming when balance >= this (default: 55000)")
+    parser.add_argument("--skip-claim", action="store_true",
+                        default=os.environ.get("SKIP_CLAIM", "false").lower() == "true",
+                        help="Test mode: skip Phase 1 (claim) entirely — go straight to table creation")
     parser.add_argument("--bet-amount", type=int, default=int(os.environ.get("BET_AMOUNT", "40000")),
                         help="Bet amount for the created table (default: 40000)")
     parser.add_argument("--min-balance", type=int, default=int(os.environ.get("MIN_BALANCE", "1000")),
