@@ -8,7 +8,7 @@ Flow (each cycle):
        to creating a table (da co xu 50k-55k thi tao ban, khong can claim)
      - Else -> claim reward until balance reaches [claim_min, claim_max]
        (stops early if server returns "no response" = claim rejected)
-  2. Select lobby "Lobby.caro.0" (caro0) via place.enterPlace and create
+  2. Select lobby "Lobby.caro.0" (caro0) via place.enter and create
      the table there with bet (default 40k)
   3. Wait for an opponent to join the table
   4. Opponent joined -> press ready ("Bat dau" / "San sang") -> send SURRENDER
@@ -294,15 +294,15 @@ JS_GET_TAP_SUMMARY = "() => (window.__tap || []).map(m => ({len: m.len, b1: m.b1
 
 JS_ENTER_LOBBY_PATH = """(lobbyPath) => {
     try {
-        if (typeof place !== 'undefined' && typeof place.enterPlace === 'function') {
+        if (typeof place !== 'undefined' && typeof place.enter === 'function') {
             // Gomoku caro0 lobby path: "Lobby.caro.0"
-            if (typeof place.currentPlace !== 'undefined' && place.currentPlace === lobbyPath) {
+            if (place.thisPath === lobbyPath) {
                 return {entered: true, already: true};
             }
-            place.enterPlace(lobbyPath);
+            place.enter(lobbyPath);
             return {entered: true, already: false};
         }
-        return {entered: false, error: 'place.enterPlace not found'};
+        return {entered: false, error: 'place.enter not found'};
     } catch(e) { return {entered: false, error: e.toString()}; }
 }"""
 
@@ -356,7 +356,7 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
     """Select the target lobby (e.g. 'Lobby.caro.0' = caro0) BEFORE creating a table.
 
     STRICT: plain 'Lobby' is NOT treated as equivalent anymore — the bot must
-    actually call place.enterPlace(lobby_path) and wait until place.thisPath
+    actually call place.enter(lobby_path) and wait until place.thisPath
     equals the lobby path, so the table gets created inside the caro0 lobby.
     If we are inside a table of that lobby (path = Lobby.caro.0.<id>), leave it first.
     """
@@ -381,9 +381,9 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
             continue
         # Root Lobby or another lobby -> explicitly enter the target lobby
         r = game_frame.evaluate(JS_ENTER_LOBBY_PATH, lobby_path)
-        log(f"    attempt {attempt}/{max_attempts}: path={path} → enterPlace({lobby_path}): {r}")
+        log(f"    attempt {attempt}/{max_attempts}: path={path} → enter({lobby_path}): {r}")
         if r.get("entered") is False and "not found" in str(r.get("error", "")):
-            log("    [!] place.enterPlace not available — cannot select lobby")
+            log("    [!] place.enter not available — cannot select lobby")
             return False
         # Wait for the ENTER round-trip: thisPath must become the lobby path
         deadline = time.time() + 15
