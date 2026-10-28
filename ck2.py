@@ -8,7 +8,8 @@ Flow (each cycle):
        to creating a table (da co xu 50k-55k thi tao ban, khong can claim)
      - Else -> claim reward until balance reaches [claim_min, claim_max]
        (stops early if server returns "no response" = claim rejected)
-  2. Create own table with bet (default 40k) in the Gomoku lobby
+  2. Select lobby "Lobby.caro.0" (caro0) via place.enterPlace and create
+     the table there with bet (default 40k)
   3. Wait for an opponent to join the table
   4. Opponent joined -> press ready ("Bat dau" / "San sang") -> send SURRENDER
      -> lose the bet to the opponent
@@ -294,7 +295,7 @@ JS_GET_TAP_SUMMARY = "() => (window.__tap || []).map(m => ({len: m.len, b1: m.b1
 JS_ENTER_LOBBY_PATH = """(lobbyPath) => {
     try {
         if (typeof place !== 'undefined' && typeof place.enterPlace === 'function') {
-            // Gomoku lobby path: "Loby.caro.0"
+            // Gomoku caro0 lobby path: "Lobby.caro.0"
             if (typeof place.currentPlace !== 'undefined' && place.currentPlace === lobbyPath) {
                 return {entered: true, already: true};
             }
@@ -348,59 +349,67 @@ def ensure_in_lobby(game_frame, page, max_attempts=3):
     return path in fb_lobby_paths or path == "Lobby"
 
 
-DEFAULT_GOMOKU_LOBBY = "Loby.caro.0"
+DEFAULT_GOMOKU_LOBBY = "Lobby.caro.0"
 
 
-def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attempts=5):
-    """Navigate to a specific lobby path (e.g. 'Loby.caro.0') and wait for it to load.
-    
-    On Facebook Gaming, the game URL already goes to the Gomoku lobby directly,
-    so 'Lobby' path is equivalent to 'Loby.caro.0'. This function handles both
-    cases gracefully, including Facebook Gaming's 'Lobby.caro' sub-paths.
+def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attempts=6):
+    """Select the target lobby (e.g. 'Lobby.caro.0' = caro0) BEFORE creating a table.
+
+    STRICT: plain 'Lobby' is NOT treated as equivalent anymore — the bot must
+    actually call place.enterPlace(lobby_path) and wait until place.thisPath
+    equals the lobby path, so the table gets created inside the caro0 lobby.
+    If we are inside a table of that lobby (path = Lobby.caro.0.<id>), leave it first.
     """
-    log(f"  [nav] navigating to lobby: {lobby_path}")
-    # Normalize: on Facebook Gaming, "Loby.caro.0" ≈ "Lobby.caro" ≈ "Lobby"
-    # They all represent the Gomoku game lobby
-    fb_equivalent_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-    
+    log(f"  [nav] selecting lobby: {lobby_path}")
     for attempt in range(1, max_attempts + 1):
         s = game_frame.evaluate(JS_GET_STATE)
-        current_path = s.get("path")
-        # Check if we're already at the target lobby or equivalent
-        if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
-            log(f"    ✓ already at {current_path}")
+        path = s.get("path")
+        if path == lobby_path:
+            log(f"    ✓ at {path}")
             return True
-        # Facebook Gaming equivalents: Lobby, Lobby.caro, Lobby.caro.0 all work for Gomoku
-        if current_path in fb_equivalent_paths:
-            log(f"    ✓ at Facebook Gaming lobby {current_path} (equivalent to {lobby_path})")
-            return True
-        # Partial match: check if the game type (caro) matches
-        if current_path and "caro" in str(current_path).lower():
-            log(f"    ✓ at caro lobby {current_path} (equivalent to {lobby_path})")
-            return True
-        log(f"    attempt {attempt}/{max_attempts}: current_path={current_path}")
+        # Inside a table of this lobby (e.g. Lobby.caro.0.7899) -> leave it first
+        if path and str(path).startswith(lobby_path + "."):
+            log(f"    path={path} — still in a table, leaving first...")
+            try:
+                game_frame.evaluate(JS_GO_LOBBY)
+            except Exception as e:
+                log(f"    leave err: {type(e).__name__}")
+            time.sleep(3)
+            new_gf = find_game_frame(page, max_wait=15)
+            if new_gf:
+                game_frame = new_gf
+            continue
+        # Root Lobby or another lobby -> explicitly enter the target lobby
         r = game_frame.evaluate(JS_ENTER_LOBBY_PATH, lobby_path)
-        log(f"    enter result: {r}")
+        log(f"    attempt {attempt}/{max_attempts}: path={path} → enterPlace({lobby_path}): {r}")
         if r.get("entered") is False and "not found" in str(r.get("error", "")):
-            # place.enterPlace doesn't exist — likely Facebook Gaming where Lobby is default
-            log(f"    [!] place.enterPlace not available — treating as lobby")
-            if current_path is None or current_path in fb_equivalent_paths or "caro" in str(current_path).lower():
-                log(f"    ✓ treating current path ({current_path}) as lobby")
-                return True
-        time.sleep(5)
-        # Re-find game frame
+            log("    [!] place.enterPlace not available — cannot select lobby")
+            return False
+        # Wait for the ENTER round-trip: thisPath must become the lobby path
+        deadline = time.time() + 15
+        reached = False
+        while time.time() < deadline:
+            time.sleep(2)
+            try:
+                s = game_frame.evaluate(JS_GET_STATE)
+            except Exception:
+                break
+            if s.get("path") == lobby_path:
+                log(f"    ✓ entered {lobby_path}")
+                reached = True
+                break
+        if reached:
+            return True
         new_gf = find_game_frame(page, max_wait=15)
         if new_gf:
             game_frame = new_gf
-        s = game_frame.evaluate(JS_GET_STATE)
-        current_path = s.get("path")
-        if current_path == lobby_path or (current_path and lobby_path in str(current_path)):
-            log(f"    ✓ reached {current_path}")
-            return True
-        if current_path == "Lobby":
-            log(f"    ✓ reached Lobby (equivalent to {lobby_path})")
-            return True
-    return False
+    try:
+        final_path = game_frame.evaluate(JS_GET_STATE).get("path")
+    except Exception:
+        final_path = None
+    log(f"    [!] failed to select {lobby_path} (final path={final_path})")
+    return final_path == lobby_path
+
 
 
 def parse_bet_text(raw):
@@ -515,12 +524,13 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
 
 
 def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_opponent=True, 
-                                    opponent_wait_seconds=120, min_balance=1000):
+                                    opponent_wait_seconds=120, min_balance=1000,
+                                    lobby=DEFAULT_GOMOKU_LOBBY):
     """Create own table with specified bet, wait for opponent, then SURRENDER.
     
     Flow:
       0. Refresh page
-      1. Navigate to Loby.caro.0
+      1. Select lobby (default: Lobby.caro.0 = caro0)
       2. Open create table panel
       3. Set bet_amount xu via the -/+ stepper (panel has no radios)
       4. Create table (button "Tạo")
@@ -561,10 +571,10 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         log("    [!] no game frame after refresh")
         return False, 0
     
-    # Step 1: Navigate to Gomoku lobby (Loby.caro.0) before creating table
-    log("  [0.5] navigating to Loby.caro.0...")
-    if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
-        log("    [!] couldn't reach Gomoku lobby — trying ensure_in_lobby instead")
+    # Step 1: Select the caro0 lobby (Lobby.caro.0) before creating the table
+    log(f"  [0.5] selecting lobby {lobby}...")
+    if not goto_lobby_path(game_frame, page, lobby_path=lobby):
+        log("    [!] couldn't select the lobby — trying ensure_in_lobby instead")
         ensure_in_lobby(game_frame, page)
     
     # Step 2: Open create table panel
@@ -741,6 +751,7 @@ def _run_cycle(args, game_frame, page, cycle_num, cycle_results):
         wait_for_opponent=args.wait_for_opponent,
         opponent_wait_seconds=args.opponent_wait_seconds,
         min_balance=args.min_balance,
+        lobby=args.lobby,
     )
 
     total_lost = sum(c["xu_lost"] for c in cycle_results) + lost
@@ -817,6 +828,8 @@ def main():
                         help="Test mode: skip Phase 1 (claim) entirely — go straight to table creation")
     parser.add_argument("--bet-amount", type=int, default=int(os.environ.get("BET_AMOUNT", "40000")),
                         help="Bet amount for the created table (default: 40000)")
+    parser.add_argument("--lobby", default=os.environ.get("LOBBY", DEFAULT_GOMOKU_LOBBY),
+                        help="Lobby to select before creating the table (default: Lobby.caro.0 = caro0)")
     parser.add_argument("--min-balance", type=int, default=int(os.environ.get("MIN_BALANCE", "1000")),
                         help="Stop if balance drops below this (default: 1000)")
     parser.add_argument("--max-claims-per-cycle", type=int, default=int(os.environ.get("MAX_CLAIMS_PER_CYCLE", "200")),
@@ -849,6 +862,7 @@ def main():
     log(f"[fp] UA={fp['user_agent'][:50]}... viewport={fp['viewport']}")
     log(f"[config] claim_min={args.claim_min:,}, claim_max={args.claim_max:,}")
     log(f"         bet_amount={args.bet_amount:,}, cycles={args.cycles}, headless={args.headless}")
+    log(f"         lobby={args.lobby}")
 
     cycle_results = []
     with sync_playwright() as p:
