@@ -1,37 +1,33 @@
 #!/usr/bin/env python3
 """
-auto_cycle.py — Combined claim + surrender cycle for Gomoku.
+ck2.py — Auto claim + create-table surrender cycle for Gomoku (run locally).
 
-Flow:
-  Loop:
-    1. Claim reward (ck_new.py logic) until balance reaches [50k, 55k] range
-       - Stops early if server returns "no response" (claim rejected)
-       - Stops at 55k to avoid game's claim block kicking in too early
-    2. Find table by target_name in Gomoku lobby
-    3. Join table + send SURRENDER → lose bet amount to target
-    4. Balance drops below 50k → can claim again
-    5. Repeat
+Flow (each cycle):
+  1. Check balance FIRST:
+     - If balance is already >= claim_min (50k) -> SKIP claim, go straight
+       to creating a table (da co xu 50k-55k thi tao ban, khong can claim)
+     - Else -> claim reward until balance reaches [claim_min, claim_max]
+       (stops early if server returns "no response" = claim rejected)
+  2. Create own table with bet (default 40k) in the Gomoku lobby
+  3. Wait for an opponent to join the table
+  4. Opponent joined -> press ready ("Bat dau" / "San sang") -> send SURRENDER
+     -> lose the bet to the opponent
+  5. Back to lobby -> balance dropped below 50k -> next cycle claims again
 
-Why 50k-55k?
-  - Server blocks claim when balance >= ~50k
-  - But we want to safely reach 50k+ before surrender
-  - Stopping at 55k gives a buffer so the surrender bet (40k) leaves us ~10-15k
-    which is below 50k → next cycle's claim works
-  - If surrender bet is 40k and we have 55k → after surrender: 15k (good, < 50k)
+Removed: the old "find target table by name/id + join target" logic.
+The bot now only creates its own table and surrenders to whoever joins.
 
 Usage:
-  python3 auto_cycle.py \\
-      --cookie ck2.txt \\
-      --target-name "nguyen123456" \\
-      --target-id 68952059 \\
-      --cycles 3 \\
-      --claim-min 50000 \\
-      --claim-max 55000 \\
-      --bet-max 100000
+  python3 ck2.py --cookie ck2.txt --cycles 3
 
   Or via env vars:
-  SINGLE_COOKIE_FILE=ck2.txt TARGET_NAME=nguyen123456 TARGET_ID=68952059 \\
-  CYCLES=3 python3 auto_cycle.py
+  SINGLE_COOKIE_FILE=ck2.txt CYCLES=3 python3 ck2.py
+
+  Useful options:
+    --claim-min 50000 --claim-max 55000    claim window (default 50k-55k)
+    --bet-amount 40000                     bet for the created table
+    --opponent-wait-seconds 120            wait time for opponent to join
+    HEADLESS=false python3 ck2.py          show browser window (local run)
 """
 import argparse
 import os
@@ -164,163 +160,13 @@ JS_CLICK_CREATE = """() => {
     if (b) b.click();
 }"""
 
-# Gomoku UI navigation (for surrender phase)
-JS_CLICK_CHON_BAN = """() => {
-    const vietnamese = ['Chọn bàn'];
-    const english = ['Find Table', 'Select Table', 'Choose Table'];
-    const keywords = vietnamese.concat(english);
-    for (const b of document.querySelectorAll('a, button')) {
-        const t = (b.innerText || '').trim();
-        if (keywords.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
-    }
-    return false;
-}"""
-
-JS_CLICK_FILTER_TAT_CA = """() => {
-    // "Tất cả" (Vietnamese) / "All" (English)
-    const texts = ['Tất cả', 'All'];
-    for (const b of document.querySelectorAll('a, button')) {
-        const t = (b.innerText || '').trim();
-        if (texts.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
-    }
-    // Fallback: filter buttons by id (original approach)
-    const byId = document.getElementById('table_filter0');
-    if (byId && byId.offsetParent !== null) { byId.click(); return true; }
-    return false;
-}"""
-
-JS_CLICK_FILTER_CON_TRONG = """() => {
-    // "Còn trống" (Vietnamese) / "Available" (English)
-    const texts = ['Còn trống', 'Available', 'Open Seats'];
-    for (const b of document.querySelectorAll('a, button')) {
-        const t = (b.innerText || '').trim();
-        if (texts.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
-    }
-    // Fallback: filter buttons by id (original approach)
-    const byId = document.getElementById('table_filter1');
-    if (byId && byId.offsetParent !== null) { byId.click(); return true; }
-    return false;
-}"""
-
-JS_FIND_TABLE_BY_NAME = """(playerName) => {
-    const matches = [];
-    document.querySelectorAll('div[id^=table_]').forEach(t => {
-        if (t.offsetParent === null) return;
-        const r = t.getBoundingClientRect();
-        if (r.width <= 0 || r.height <= 0) return;
-        const text = (t.innerText || '').trim();
-        const parts = text.split('\\n');
-        const id = parseInt(t.id.replace('table_', ''));
-        if (isNaN(id)) return;
-        const cls = (t.className || '').toString();
-        const all_text = text.toLowerCase();
-        if (all_text.includes(playerName.toLowerCase())) {
-            matches.push({
-                id, bet: parts[0] || '', player: parts[1] || '', cls,
-                has_exceed: cls.includes('exceed')
-            });
-        }
-    });
-    return matches;
-}"""
-
-# Close the table-info popup (after clicking a table to look at player IDs)
-JS_CLOSE_TABLE_POPUP = """() => {
-    const closeBtn = document.querySelector('.msgBox .closeButton');
-    if (closeBtn) { closeBtn.click(); return true; }
-    return false;
-}"""
-
-# Get all showGameProfile(playerId) elements currently visible in popups.
-# Returns array of {player_id, text} for each profile link.
-JS_GET_VISIBLE_PROFILES = """() => {
-    const out = [];
-    document.querySelectorAll('[onclick*=showGameProfile]').forEach(el => {
-        if (el.offsetParent === null) return;
-        const onclick = el.getAttribute('onclick') || '';
-        const m = onclick.match(/showGameProfile\\((\\d+)\\)/);
-        if (m) {
-            out.push({player_id: parseInt(m[1]), text: (el.textContent || '').trim().slice(0, 80)});
-        }
-    });
-    return out;
-}"""
-
-# === WS tap approach (faster than DOM clicking) ===
-# When we click a table, server sends PLAYER_ENTERED (cmd 0x019E) message via WS
-# containing player_ids of all players in that table. We tap WS messages and
-# search for target_id in the binary data — no DOM parsing needed.
-
-JS_INSTALL_WS_TAP = """() => {
-    if (window.__tap_installed) return true;
-    window.__tap = [];
-    window.__last_tap_count = 0;
-    const ws = window.connection && window.connection.ws;
-    if (!ws) return false;
-    const orig = ws.onmessage;
-    ws.binaryType = 'arraybuffer';
-    ws.onmessage = function(ev) {
-        let bytes = null;
-        try {
-            if (ev.data instanceof ArrayBuffer) bytes = Array.from(new Uint8Array(ev.data));
-            else if (ev.data && ev.data.data) bytes = Array.from(new Uint8Array(ev.data.data));
-        } catch(e) {}
-        if (bytes) window.__tap.push({ts: Date.now(), bytes});
-        if (orig) return orig.call(ws, ev);
-    };
-    window.__tap_installed = true;
-    return true;
-}"""
-
-JS_CLEAR_TAP = "() => { window.__tap = []; window.__last_tap_count = 0; return true; }"
-
-JS_GET_TAP = "() => window.__tap || []"
-
-# Scan ALL tables (id, bet, player_name) without name filter
-JS_SCAN_ALL_TABLES = """() => {
-    const out = [];
-    document.querySelectorAll('div[id^=table_]').forEach(t => {
-        if (t.offsetParent === null) return;
-        const r = t.getBoundingClientRect();
-        if (r.width <= 0 || r.height <= 0) return;
-        const text = (t.innerText || '').trim();
-        const parts = text.split('\\n');
-        const id = parseInt(t.id.replace('table_', ''));
-        if (isNaN(id)) return;
-        const cls = (t.className || '').toString();
-        out.push({id, bet: parts[0] || '', player: parts[1] || '', cls, has_exceed: cls.includes('exceed')});
-    });
-    return out;
-}"""
-
-JS_CLICK_TABLE = """(tableId) => {
-    const div = document.getElementById('table_' + tableId);
-    if (div && div.offsetParent !== null) { div.click(); return {clicked: true}; }
-    return {clicked: false};
-}"""
-
-JS_CLICK_VAO_CHOI = """() => {
-    // "Vào chơi" (Vietnamese) / "Play" / "Join Game" / "Join" (English)
-    const texts = ['Vào chơi', 'Play', 'Join Game', 'Join'];
-    for (const b of document.querySelectorAll('input.msgButton, button, input[type=button]')) {
-        const t = (b.value || b.innerText || '').trim();
-        if (texts.some(k => t === k) && b.offsetParent !== null) { b.click(); return {clicked: true}; }
-    }
-    // Fallback: fuzzy match (contains) for English variants
-    for (const b of document.querySelectorAll('input.msgButton, button, input[type=button]')) {
-        if (b.offsetParent === null) continue;
-        const t = (b.value || b.innerText || '').trim().toLowerCase();
-        if (t === 'chơi' || t === 'vào' || t === 'play' || t === 'join') { b.click(); return {clicked: true}; }
-    }
-    return {clicked: false};
-}"""
-
+# Ready button — pressed after the opponent joins
 JS_FIND_BAT_DAU = """() => {
     for (const b of document.querySelectorAll('button, input[type=button], [role=button], a')) {
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
         const t = (b.innerText || b.textContent || b.value || '').trim();
-        if (t.includes('Bắt đầu')) return {found: true, text: t};
+        if (t.includes('Bắt đầu') || t.includes('Sẵn sàng')) return {found: true, text: t};
     }
     return {found: false};
 }"""
@@ -330,7 +176,7 @@ JS_CLICK_BAT_DAU = """() => {
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
         const t = (b.innerText || b.textContent || b.value || '').trim();
-        if (t.includes('Bắt đầu')) { b.click(); return {clicked: true, text: t}; }
+        if (t.includes('Bắt đầu') || t.includes('Sẵn sàng')) { b.click(); return {clicked: true, text: t}; }
     }
     return {clicked: false};
 }"""
@@ -464,25 +310,6 @@ def find_game_frame(page, max_wait=60):
                 continue
         time.sleep(2)
     return None
-
-
-def get_balance(game_frame):
-    try:
-        s = game_frame.evaluate(JS_GET_STATE)
-        return parse_bet(s.get("balance")), s
-    except Exception as e:
-        log(f"  [warn] get_balance failed: {type(e).__name__}")
-        return 0, {"path": None}
-
-
-def is_browser_alive(page):
-    """Check if the browser/page is still alive."""
-    try:
-        if page and page.is_closed():
-            return False
-        return True
-    except Exception:
-        return False
 
 
 def ensure_in_lobby(game_frame, page, max_attempts=3):
@@ -647,327 +474,6 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
     return bal, claims_ok, claims_fail, server_rejected
 
 
-def open_table_browser(game_frame, page, filter_name="Tất cả"):
-    """Click 'Chọn bàn' → filter (Tất cả / Còn trống).
-    Only operates in Gomoku lobby (Loby.caro.0); if not in Gomoku lobby, returns False.
-    """
-    s = game_frame.evaluate(JS_GET_STATE)
-    current_path = s.get("path")
-    fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-    if current_path not in fb_lobby_paths:
-        log(f"  [open_table_browser] NOT in Gomoku lobby (path={current_path}) — refusing to search here")
-        return False
-    game_frame.evaluate(JS_CLOSE_POPUPS)
-    time.sleep(0.5)
-    game_frame.evaluate(JS_CLICK_CHON_BAN)
-    time.sleep(5)
-    if filter_name == "Tất cả":
-        game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
-    elif filter_name == "Còn trống":
-        game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
-    time.sleep(2)
-
-
-def find_target_table(game_frame, target_name, bet_max):
-    """Find a table hosted by target_name. Returns target table dict or None."""
-    matches = game_frame.evaluate(JS_FIND_TABLE_BY_NAME, target_name)
-    if not matches:
-        return None
-    # Sort by bet ascending
-    matches.sort(key=lambda t: parse_bet(t.get("bet", "999999")))
-
-    # First try: tables we can afford (no "exceed") AND bet <= bet_max
-    joinable = [t for t in matches if not t.get("has_exceed") and parse_bet(t.get("bet", "999999")) <= bet_max]
-    if joinable:
-        return joinable[0]
-
-    # Second try: tables with bet <= bet_max (even if "exceed" — we'll attempt anyway)
-    by_bet = [t for t in matches if parse_bet(t.get("bet", "999999")) <= bet_max]
-    if by_bet:
-        log(f"  [scan] target found but all tables have 'exceed' (balance < bet):")
-        for t in by_bet:
-            log(f"    id={t['id']} bet={t['bet']} cls={t['cls']}")
-        return by_bet[0]
-
-    log(f"  [scan] found {len(matches)} tables for '{target_name}' but none with bet <= {bet_max}")
-    for t in matches:
-        log(f"    id={t['id']} bet={t['bet']} cls={t['cls']}")
-    return None
-
-
-def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
-    """Find a table where target_id is one of the players.
-    Uses WS tap approach (faster than DOM popup parsing):
-      1. Install WS message tap (if not installed yet)
-      2. For each table: clear tap, click table, check WS messages for target_id bytes
-      3. If found, return table dict
-
-    This works because when we click a table, server sends PLAYER_ENTERED (0x019E)
-    message containing player_ids of all players in that table. We search the
-    binary data for target_id (4-byte BE int32) — no DOM parsing needed.
-    """
-    import struct
-    target_be = struct.pack('>I', int(target_id))
-    target_bytes_list = list(target_be)
-
-    # Install WS tap (idempotent — if already installed, returns true)
-    game_frame.evaluate(JS_INSTALL_WS_TAP)
-
-    # Scan all tables visible in lobby
-    tables = game_frame.evaluate(JS_SCAN_ALL_TABLES)
-    if not tables:
-        return None
-
-    log(f"  [scan-by-id] {len(tables)} tables visible — clicking each, checking WS for target_id={target_id}")
-    tables_to_scan = tables[:max_tables_to_scan]
-
-    found_table = None
-    for t in tables_to_scan:
-        # Close any existing popup
-        game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-        time.sleep(0.2)
-        # Clear tap before click (so new messages are only from this click)
-        game_frame.evaluate(JS_CLEAR_TAP)
-        # Click this table
-        game_frame.evaluate(JS_CLICK_TABLE, t["id"])
-        time.sleep(1.0)  # wait for PLAYER_ENTERED to arrive
-        # Check tap messages for target_id
-        tap = game_frame.evaluate(JS_GET_TAP)
-        for msg in tap:
-            b = msg.get('bytes') or []
-            for off in range(len(b) - 3):
-                if b[off:off+4] == target_bytes_list:
-                    log(f"  ✓✓✓ FOUND target_id={target_id} at table {t['id']} (player: '{t['player']}', bet: {t['bet']})")
-                    found_table = t
-                    break
-            if found_table:
-                break
-        if found_table:
-            break
-
-    # Close any popup before returning
-    game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-    time.sleep(0.3)
-
-    if not found_table:
-        log(f"  [scan-by-id] target_id={target_id} not found in any of the {len(tables_to_scan)} tables scanned")
-        return None
-
-    # Filter by bet_max
-    bet_val = parse_bet(found_table.get("bet", "999999"))
-    if bet_val > bet_max:
-        log(f"  [scan-by-id] found but bet {bet_val:,} > bet_max {bet_max:,} — skipping")
-        return None
-
-    return found_table
-
-
-def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max, max_wait_seconds=60, max_tables_to_scan=30):
-    """Open table browser + poll for target's table up to max_wait_seconds.
-    Strategy:
-      - If target_id is set (>0), search by ID (click each table to find player IDs)
-      - Else if target_name is set (non-empty), search by name
-      - Else error
-    Returns target table dict or None if not found within the time budget.
-
-    Only searches in Loby.caro.0 lobby — will not search if we're in a different lobby.
-    """
-    use_id = target_id and int(target_id) > 0
-    use_name = bool(target_name and target_name.strip())
-
-    if not use_id and not use_name:
-        log("  [wait] neither target_name nor target_id set — cannot find target")
-        return None
-
-    # Verify we're in the Gomoku lobby (Loby.caro.0) before searching
-    s = game_frame.evaluate(JS_GET_STATE)
-    current_path = s.get("path")
-    fb_equivalent_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-    if current_path not in fb_equivalent_paths:
-        log(f"  [wait] NOT in Gomoku lobby (path={current_path}) — only searching in Loby.caro.0")
-        return None
-    log(f"  [wait] at Gomoku lobby: {current_path}")
-
-    search_mode = "ID" if use_id else "name"
-    log(f"  [wait] polling for target (mode={search_mode}, target_id={target_id}, name={target_name!r}) up to {max_wait_seconds}s...")
-    deadline = time.time() + max_wait_seconds
-    attempt = 0
-    # Open browser first with "Tất cả" filter
-    open_table_browser(game_frame, page, filter_name="Tất cả")
-
-    while time.time() < deadline:
-        attempt += 1
-        if use_id:
-            target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
-        else:
-            target = find_target_table(game_frame, target_name, bet_max)
-        if target:
-            return target
-
-        # Switch to "Còn trống" filter as alternative
-        game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
-        time.sleep(2)
-        if use_id:
-            target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
-        else:
-            target = find_target_table(game_frame, target_name, bet_max)
-        if target:
-            return target
-
-        # Switch back to "Tất cả"
-        game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
-        # Wait + try again (every 10s)
-        wait = min(10, max(2, deadline - time.time()))
-        log(f"  [wait] attempt #{attempt} (mode={search_mode}): target not found — retry in {wait:.0f}s...")
-        time.sleep(wait)
-        # Re-open table browser (in case lobby state changed)
-        try:
-            s = game_frame.evaluate(JS_GET_STATE)
-            current_path = s.get("path")
-            fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-            if current_path not in fb_lobby_paths:
-                log(f"  [wait] retry: not in Gomoku lobby (path={current_path}) — attempting to return")
-                ensure_in_lobby(game_frame, page)
-                if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
-                    log(f"  [wait] retry: could not return to {DEFAULT_GOMOKU_LOBBY} — aborting search")
-                    return None
-            open_table_browser(game_frame, page, filter_name="Tất cả")
-        except Exception as e:
-            log(f"  [wait] re-open lobby err: {e}")
-    return None
-
-
-def surrender_one_round(game_frame, page, target_name, target_id, bet_max, target_wait_seconds=60, max_tables_to_scan=30):
-    """Find target table → join → SURRENDER. Returns (success, balance_lost).
-    If target_id > 0, search by ID (preferred). Else search by name.
-    """
-    log("\n[SURRENDER] starting surrender round...")
-    bal_before, _ = get_balance(game_frame)
-    log(f"  balance before: {bal_before:,}")
-
-    # Step 0: Refresh page before looking for target (ensures fresh lobby state)
-    log("  [0] refreshing page before target search...")
-    try:
-        page.reload(wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(10000)
-        log("    page refreshed")
-    except Exception as e:
-        log(f"    [!] page refresh failed: {e}")
-    
-    # Re-find game frame after refresh
-    new_gf = find_game_frame(page, max_wait=60)
-    if new_gf:
-        game_frame = new_gf
-        game_frame.evaluate(JS_CLOSE_POPUPS)
-        time.sleep(2)
-        # Wait for game state to be fully loaded
-        for _ in range(10):
-            try:
-                s = game_frame.evaluate(JS_GET_STATE)
-                if s.get("path") and s.get("playerId"):
-                    break
-            except:
-                pass
-            time.sleep(2)
-        bal_before, _ = get_balance(game_frame)
-        log(f"    balance after refresh: {bal_before:,}")
-    else:
-        log("    [!] no game frame after refresh — using existing")
-
-    # Step 1: Navigate to Gomoku lobby (Loby.caro.0) to find target's table
-    log("  [0.5] navigating to Loby.caro.0...")
-    if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
-        log("    [!] couldn't reach Gomoku lobby — trying ensure_in_lobby instead")
-        ensure_in_lobby(game_frame, page)
-    open_table_browser(game_frame, page, filter_name="Tất cả")
-
-    # Step 1+2: poll for target's table with retry (waits up to target_wait_seconds)
-    log(f"  [1+2] looking for target (id={target_id}, name={target_name!r}) up to {target_wait_seconds}s...")
-    target = wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max,
-                                         max_wait_seconds=target_wait_seconds,
-                                         max_tables_to_scan=max_tables_to_scan)
-    if not target:
-        log(f"    [!] target not found within {target_wait_seconds}s — skipping surrender")
-        log(f"    [hint] make sure target has created a table with bet <= {bet_max} xu")
-        return False, 0
-
-    log(f"    ✓ found: table {target['id']} bet={target['bet']} player={target['player']}")
-
-    # Close any popup before clicking the table again
-    game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-    time.sleep(0.5)
-
-    # Step 3: click on target table
-    log(f"  [3] clicking table {target['id']}...")
-    game_frame.evaluate(JS_CLICK_TABLE, target["id"])
-    time.sleep(5)
-
-    # Step 4: click "Vào chơi"
-    log("  [4] looking for 'Vào chơi' button...")
-    clicked_vao_choi = False
-    for i in range(10):
-        r = game_frame.evaluate(JS_CLICK_VAO_CHOI)
-        if r.get("clicked"):
-            log(f"    ✓ clicked Vào chơi")
-            clicked_vao_choi = True
-            break
-        time.sleep(0.5)
-    if not clicked_vao_choi:
-        log("    [!] Vào chơi not found — table may be full or rejected")
-        return False, 0
-
-    # Step 5: wait for "Bắt đầu" button (or game may have auto-started)
-    log("  [5] waiting for Bắt đầu button (max 30s)...")
-    found_start = False
-    for i in range(15):
-        r = game_frame.evaluate(JS_FIND_BAT_DAU)
-        if r.get("found"):
-            log(f"    ✓ Bắt đầu found (text: {r.get('text')})")
-            game_frame.evaluate(JS_CLICK_BAT_DAU)
-            log(f"    → clicked Bắt đầu, waiting 5s for game start...")
-            time.sleep(5)
-            found_start = True
-            break
-        time.sleep(2)
-    if not found_start:
-        log("    [!] Bắt đầu not found — trying SURRENDER anyway")
-
-    # Step 6: send SURRENDER
-    log("  [6] sending SURRENDER...")
-    r = game_frame.evaluate(JS_SEND_SURRENDER)
-    log(f"    result: {r}")
-    surrender_ok = r.get("ok", False) or r.get("err_code") == 22
-
-    # If "Bạn không tham gia bàn chơi này" — wait + retry
-    if not surrender_ok and r.get("err_msg") and "không tham gia" in r.get("err_msg", ""):
-        log("    [!] not a player yet — waiting 10s + retry...")
-        time.sleep(10)
-        r = game_frame.evaluate(JS_SEND_SURRENDER)
-        log(f"    retry result: {r}")
-        surrender_ok = r.get("ok", False) or r.get("err_code") == 22
-
-    # Step 7: close game-over dialog + return to lobby
-    log("  [7] closing dialog + returning to lobby...")
-    time.sleep(3)
-    for _ in range(5):
-        clicked = game_frame.evaluate(JS_CLICK_OK)
-        if clicked.get("clicked"):
-            log(f"    closed dialog: {clicked}")
-            time.sleep(1)
-            break
-        time.sleep(1)
-
-    ensure_in_lobby(game_frame, page)
-
-    # Final balance
-    bal_after, _ = get_balance(game_frame)
-    delta = bal_after - bal_before
-    log(f"  [done] balance: {bal_before:,} → {bal_after:,} (Δ={delta:+,})")
-    if delta < 0:
-        log(f"         ✓ lost {-delta:,} xu (transferred to target)")
-    return surrender_ok, max(0, -delta)
-
-
 def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_opponent=True, 
                                     opponent_wait_seconds=120, min_balance=1000):
     """Create own table with specified bet, wait for opponent, then SURRENDER.
@@ -979,7 +485,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
       3. Select bet_amount xu
       4. Create table
       5. Wait for opponent to join (if wait_for_opponent)
-      6. Start game + SURRENDER
+      6. Press ready (Bắt đầu / Sẵn sàng) then SURRENDER
     
      Returns (success, balance_lost).
     """
@@ -1066,7 +572,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     
     # Step 6: Check if game started, then surrender
     # Click Bắt đầu if available
-    log("  [5] looking for Bắt đầu button...")
+    log("  [5] looking for Bắt đầu / Sẵn sàng (ready) button...")
     for i in range(10):
         r = game_frame.evaluate(JS_FIND_BAT_DAU)
         if r.get("found"):
@@ -1126,20 +632,19 @@ def get_balance(game_frame):
                 raise BrowserCrashed(f"{err_type}: {e}")
         raise  # re-raise other exceptions
 
-def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
-               total_xu_to_target, cookies, fp, ctx):
-    """Execute one claim → surrender cycle. Called from main() with error handling."""
+def _run_cycle(args, game_frame, page, cycle_num, cycle_results):
+    """One cycle: check/claim -> create own table -> wait opponent -> ready -> surrender."""
     # Check min balance
     try:
         bal, _ = get_balance(game_frame)
     except BrowserCrashed:
         log(f"  [!] browser crashed during balance check")
         raise BrowserCrashed("browser closed during get_balance")
-    
+
     if bal < args.min_balance:
         log(f"[STOP] balance {bal:,} < min {args.min_balance:,}")
         raise StopCycle
-    
+
     # Ensure we're in Lobby
     if not ensure_in_lobby(game_frame, page):
         log("[!] couldn't return to Lobby — reloading game")
@@ -1154,61 +659,55 @@ def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
             log(f"[!] reload failed: {e}")
             raise StopCycle
 
-    # PHASE 1: CLAIM until [claim_min, claim_max]
-    log(f"\n=== Phase 1: CLAIM (target balance: [{args.claim_min:,}, {args.claim_max:,}]) ===")
-    final_bal, n_ok, n_fail, server_rej = claim_until_threshold(
-        game_frame, page, args.claim_min, args.claim_max,
-        max_claims=args.max_claims_per_cycle,
-        cooldown=args.claim_cooldown,
+    # PHASE 1: skip claim if balance is already in [claim_min, claim_max]
+    final_bal, _ = get_balance(game_frame)
+    if final_bal >= args.claim_min:
+        log(f"\n=== Phase 1: SKIP CLAIM (balance {final_bal:,} already >= {args.claim_min:,}) ===")
+        log("    enough xu — going straight to table creation")
+    else:
+        log(f"\n=== Phase 1: CLAIM (target balance: [{args.claim_min:,}, {args.claim_max:,}]) ===")
+        final_bal, n_ok, n_fail, server_rej = claim_until_threshold(
+            game_frame, page, args.claim_min, args.claim_max,
+            max_claims=args.max_claims_per_cycle,
+            cooldown=args.claim_cooldown,
+        )
+
+        if final_bal < args.claim_min and not server_rej:
+            log(f"\n[!] couldn't reach {args.claim_min:,} xu — claim exhausted")
+            log(f"    current balance: {final_bal:,}")
+            if final_bal < args.bet_amount:
+                log(f"    [STOP] balance too low to create a {args.bet_amount:,} xu table")
+                raise StopCycle
+
+    # PHASE 2: create own table -> wait opponent -> ready -> SURRENDER
+    bet_amount = args.bet_amount
+    if final_bal < bet_amount:
+        log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu) ===")
+        log(f"  [SKIP] balance {final_bal:,} < bet {bet_amount:,} — not enough funds")
+        cycle_results.append({
+            "cycle": cycle_num,
+            "balance_after_claim": final_bal,
+            "surrender_ok": False,
+            "xu_lost": 0,
+        })
+        return game_frame
+
+    log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
+    ok, lost = create_own_table_and_surrender(
+        game_frame, page, bet_amount=bet_amount,
+        wait_for_opponent=args.wait_for_opponent,
+        opponent_wait_seconds=args.opponent_wait_seconds,
+        min_balance=args.min_balance,
     )
 
-    if final_bal < args.claim_min and not server_rej:
-        log(f"\n[!] couldn't reach {args.claim_min:,} xu — claim exhausted")
-        log(f"    current balance: {final_bal:,}")
-        if final_bal >= args.bet_max // 4:
-            log(f"    proceeding to surrender attempt anyway")
-        else:
-            log(f"    [STOP] balance too low")
-            raise StopCycle
-
-    # PHASE 2: SURRENDER
-    if args.mode == "create_own_table":
-        bet_amount = args.bet_amount
-        if final_bal < bet_amount:
-            log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu) ===")
-            log(f"  [SKIP] balance {final_bal:,} < bet {bet_amount:,} — not enough funds")
-            cycle_results.append({
-                "cycle": cycle_num,
-                "balance_after_claim": final_bal,
-                "surrender_ok": False,
-                "xu_lost": 0,
-            })
-            if cycle_num < args.cycles:
-                time.sleep(args.delay_between_cycles)
-            return
-        log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
-        ok, lost = create_own_table_and_surrender(
-            game_frame, page, bet_amount=bet_amount,
-            wait_for_opponent=args.wait_for_opponent,
-            opponent_wait_seconds=args.opponent_wait_seconds,
-            min_balance=args.min_balance,
-        )
-        target_label = "self-created table"
-    else:
-        log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
-        ok, lost = surrender_one_round(game_frame, page, args.target_name, args.target_id, args.bet_max,
-                                       target_wait_seconds=args.target_wait_seconds,
-                                       max_tables_to_scan=args.max_tables_to_scan)
-        target_label = f"target '{args.target_name}' (id={args.target_id})"
-
-    total_xu_to_target += lost
+    total_lost = sum(c["xu_lost"] for c in cycle_results) + lost
     cycle_results.append({
         "cycle": cycle_num,
         "balance_after_claim": final_bal,
         "surrender_ok": ok,
         "xu_lost": lost,
     })
-    log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target:,}")
+    log(f"\n[cycle {cycle_num}] ready+surrender {'✓' if ok else '✗'} | lost {lost:,} xu | total lost: {total_lost:,}")
 
     # Re-find game frame for status reporting
     new_gf = find_game_frame(page, max_wait=10)
@@ -1260,23 +759,18 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Gomoku auto-cycle: claim → surrender → claim → surrender ...")
+    parser = argparse.ArgumentParser(
+        description="Gomoku auto: check/claim 50-55k -> create table -> wait opponent -> ready -> surrender -> repeat")
     parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck2.txt"),
                         help="Cookie file (default: ck2.txt)")
-    parser.add_argument("--target-name", default="nguyen123456",
-                        help="Player name to find in tables (optional — if target_id is set, name is ignored)")
-    parser.add_argument("--target-id", type=int, default=68952059,
-                        help="Player ID to find (preferred — unique, no name collision). Default: 0 (search by name)")
-    parser.add_argument("--max-tables-to-scan", type=int, default=int(os.environ.get("MAX_TABLES_TO_SCAN", "30")),
-                        help="Max tables to scan when searching by ID (default: 30 — each table click takes ~1.5s)")
     parser.add_argument("--cycles", type=int, default=int(os.environ.get("CYCLES", "3")),
-                        help="Number of claim→surrender cycles (default: 3)")
+                        help="Number of claim→create→surrender cycles (default: 3)")
     parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "50000")),
-                        help="Stop claiming when balance >= this (default: 50000)")
+                        help="Skip claiming if balance >= this; else claim until balance >= this (default: 50000)")
     parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "55000")),
                         help="Hard stop claiming when balance >= this (default: 55000)")
-    parser.add_argument("--bet-max", type=int, default=int(os.environ.get("BET_MAX", "100000")),
-                        help="Max bet to accept (default: 100000)")
+    parser.add_argument("--bet-amount", type=int, default=int(os.environ.get("BET_AMOUNT", "40000")),
+                        help="Bet amount for the created table (default: 40000)")
     parser.add_argument("--min-balance", type=int, default=int(os.environ.get("MIN_BALANCE", "1000")),
                         help="Stop if balance drops below this (default: 1000)")
     parser.add_argument("--max-claims-per-cycle", type=int, default=int(os.environ.get("MAX_CLAIMS_PER_CYCLE", "200")),
@@ -1285,21 +779,13 @@ def main():
                         help="Seconds between claims (default: 1.0)")
     parser.add_argument("--delay-between-cycles", type=float, default=float(os.environ.get("DELAY_BETWEEN_CYCLES", "10")),
                         help="Seconds between cycles (default: 10)")
-    parser.add_argument("--target-wait-seconds", type=int, default=int(os.environ.get("TARGET_WAIT_SECONDS", "60")),
-                        help="Seconds to wait for target's table to appear (default: 60)")
-    parser.add_argument("--headless", default=os.environ.get("HEADLESS", "true").lower() == "true",
-                        action="store_true", help="Run headless")
-    parser.add_argument("--mode", default=os.environ.get("MODE", "surrender_to_target"),
-                        choices=["surrender_to_target", "create_own_table"],
-                        help="surrender_to_target: find target's table and surrender (default) | "
-                             "create_own_table: create own 40k table, wait for opponent, surrender")
-    parser.add_argument("--bet-amount", type=int, default=int(os.environ.get("BET_AMOUNT", "40000")),
-                        help="Bet amount to use when creating own table (create_own_table mode)")
     parser.add_argument("--wait-for-opponent", type=lambda v: v.lower() in ('true', '1', 'yes'),
                         default=os.environ.get("WAIT_FOR_OPPONENT", "true").lower() == "true",
-                        help="Wait for opponent to join before surrendering (create_own_table mode)")
+                        help="Wait for opponent to join before ready+surrender")
     parser.add_argument("--opponent-wait-seconds", type=int, default=int(os.environ.get("OPPONENT_WAIT_SECONDS", "120")),
-                        help="Seconds to wait for opponent when creating own table (default: 120)")
+                        help="Seconds to wait for opponent after creating the table (default: 120)")
+    parser.add_argument("--headless", default=os.environ.get("HEADLESS", "true").lower() == "true",
+                        action="store_true", help="Run headless")
     args = parser.parse_args()
 
     cookie_path = args.cookie
@@ -1315,12 +801,10 @@ def main():
 
     fp = al.get_or_create_fingerprint(os.path.basename(cookie_path))
     log(f"[fp] UA={fp['user_agent'][:50]}... viewport={fp['viewport']}")
-    log(f"[config] target='{args.target_name}' (id={args.target_id})")
-    log(f"         claim_min={args.claim_min:,}, claim_max={args.claim_max:,}")
-    log(f"         bet_max={args.bet_max:,}, cycles={args.cycles}, mode={args.mode}")
+    log(f"[config] claim_min={args.claim_min:,}, claim_max={args.claim_max:,}")
+    log(f"         bet_amount={args.bet_amount:,}, cycles={args.cycles}, headless={args.headless}")
 
     cycle_results = []
-    total_xu_to_target = 0
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
         ctx = browser.new_context(
@@ -1386,11 +870,8 @@ def main():
                     log("[!] failed to restart browser — stopping")
                     break
 
-            # Catch browser crashes / page closed errors
-            result = None
             try:
-                result = _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results, 
-                           total_xu_to_target, cookies, fp, ctx)
+                result = _run_cycle(args, game_frame, page, cycle_num, cycle_results)
                 if result:
                     game_frame = result  # Update with refreshed game frame
             except StopCycle:
@@ -1432,6 +913,9 @@ def main():
                     log(f"  Non-fatal error — continuing to next cycle")
                 continue
 
+            if cycle_num < args.cycles:
+                time.sleep(args.delay_between_cycles)
+
         # Final summary
         try:
             bal_final, _ = get_balance(game_frame)
@@ -1452,13 +936,10 @@ def main():
     for c in cycle_results:
         marker = "✓" if c['surrender_ok'] else "✗"
         log(f"  Cycle {c['cycle']}: balance_after_claim={c['balance_after_claim']:,}, "
-            f"surrender={marker}, lost={c['xu_lost']:,}")
+            f"ready+surrender={marker}, lost={c['xu_lost']:,}")
     log(f"\nFinal balance: {bal_final:,} xu")
-    if args.mode == "create_own_table":
-        log(f"Total cycles completed: {len(cycle_results)}/{args.cycles}")
-    else:
-        log(f"Total xu sent to '{args.target_name}': {total_xu_to_target:,} xu")
-        log(f"Total cycles completed: {len(cycle_results)}/{args.cycles}")
+    log(f"Total xu lost via surrender: {sum(c['xu_lost'] for c in cycle_results):,} xu")
+    log(f"Total cycles completed: {len(cycle_results)}/{args.cycles}")
     return 0 if cycle_results else 1
 
 
