@@ -292,19 +292,33 @@ JS_CLEAR_TAP = "() => { window.__tap = []; return true; }"
 
 JS_GET_TAP_SUMMARY = "() => (window.__tap || []).map(m => ({len: m.len, b1: m.b1}))"
 
-JS_ENTER_LOBBY_PATH = """(lobbyPath) => {
+JS_ENTER_LOBBY_ROOM = """(lobbyPath) => new Promise((resolve) => {
     try {
-        if (typeof place !== 'undefined' && typeof place.enter === 'function') {
-            // Gomoku caro0 lobby path: "Lobby.caro.0"
-            if (place.thisPath === lobbyPath) {
-                return {entered: true, already: true};
-            }
-            place.enter(lobbyPath);
-            return {entered: true, already: false};
+        if (!window.connection || !connection.ws || connection.ws.readyState !== 1) {
+            resolve({entered: false, error: 'ws not connected'}); return;
         }
-        return {entered: false, error: 'place.enter not found'};
-    } catch(e) { return {entered: false, error: e.toString()}; }
-}"""
+        if (place.thisPath === lobbyPath) { resolve({entered: true, already: true}); return; }
+        // Same wire format as the game's own enterSuitableRoom():
+        //   ENTER_PLACE | ascii path | utf empty password | mode byte (MODE_PLAY)
+        const msg = new OutboundMessage("ENTER_PLACE");
+        msg.writeAscii(lobbyPath);
+        msg.writeString("");
+        msg.writeByte(window.MODE_PLAY !== undefined ? window.MODE_PLAY : 1);
+        let done = false;
+        connection.send(msg, function(resp, ok) {
+            if (done) return; done = true;
+            if (!ok) { resolve({entered: false, error: 'server rejected'}); return; }
+            // mirror the client: track the selected room
+            try {
+                const rid = parseInt(lobbyPath.split('.').pop(), 10);
+                if (!isNaN(rid)) window.roomId = rid;
+            } catch(e) {}
+            resolve({entered: true, already: false});
+        });
+        setTimeout(() => { if (!done) { done = true; resolve({entered: false, error: 'timeout 12s'}); } }, 12000);
+    } catch(e) { resolve({entered: false, error: e.toString()}); }
+})"""
+
 
 def find_game_frame(page, max_wait=60):
     deadline = time.time() + max_wait
@@ -352,15 +366,33 @@ def ensure_in_lobby(game_frame, page, max_attempts=3):
 DEFAULT_GOMOKU_LOBBY = "Lobby.caro.0"
 
 
-def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attempts=6):
-    """Select the target lobby (e.g. 'Lobby.caro.0' = caro0) BEFORE creating a table.
+def normalize_lobby(raw):
+    """Normalize user lobby input to 'Lobby.caro.<n>' (default caro0).
 
-    STRICT: plain 'Lobby' is NOT treated as equivalent anymore — the bot must
-    actually call place.enter(lobby_path) and wait until place.thisPath
-    equals the lobby path, so the table gets created inside the caro0 lobby.
-    If we are inside a table of that lobby (path = Lobby.caro.0.<id>), leave it first.
+    Accepts: 'lobby.caro0', 'Loby.caro.0', 'caro0', '0', 'Lobby.caro.0', ...
     """
-    log(f"  [nav] selecting lobby: {lobby_path}")
+    if not raw:
+        return DEFAULT_GOMOKU_LOBBY
+    s = str(raw).strip().lower().replace(" ", "")
+    m = re.search(r"caro[._]?0*(\d+)$", s) or re.search(r"(\d+)$", s)
+    if m:
+        return f"Lobby.caro.{int(m.group(1))}"
+    return DEFAULT_GOMOKU_LOBBY
+
+
+def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attempts=6):
+    """Select the target lobby room (default 'Lobby.caro.0' = caro0 / Hawaii).
+
+    The browser game keeps place.thisPath == 'Lobby' while browsing rooms —
+    the selected room lives in window.roomId. The server-side place is switched
+    by the ENTER_PLACE WS command (same as arena10k.py's make_enter), which
+    decides where the created table will live ('Lobby.caro.0.<tableId>').
+    """
+    want_rid = None
+    m = re.search(r"(\d+)$", lobby_path)
+    if m:
+        want_rid = int(m.group(1))
+    log(f"  [nav] selecting lobby: {lobby_path} (room {want_rid})")
     for attempt in range(1, max_attempts + 1):
         s = game_frame.evaluate(JS_GET_STATE)
         path = s.get("path")
@@ -379,27 +411,20 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
             if new_gf:
                 game_frame = new_gf
             continue
-        # Root Lobby or another lobby -> explicitly enter the target lobby
-        r = game_frame.evaluate(JS_ENTER_LOBBY_PATH, lobby_path)
-        log(f"    attempt {attempt}/{max_attempts}: path={path} → enter({lobby_path}): {r}")
-        if r.get("entered") is False and "not found" in str(r.get("error", "")):
-            log("    [!] place.enter not available — cannot select lobby")
-            return False
-        # Wait for the ENTER round-trip: thisPath must become the lobby path
-        deadline = time.time() + 15
-        reached = False
-        while time.time() < deadline:
-            time.sleep(2)
-            try:
-                s = game_frame.evaluate(JS_GET_STATE)
-            except Exception:
-                break
-            if s.get("path") == lobby_path:
-                log(f"    ✓ entered {lobby_path}")
-                reached = True
-                break
-        if reached:
-            return True
+        # Root Lobby -> send ENTER_PLACE for the target room over the game WS
+        r = game_frame.evaluate(JS_ENTER_LOBBY_ROOM, lobby_path)
+        try:
+            rid = game_frame.evaluate("() => window.roomId")
+        except Exception:
+            rid = None
+        log(f"    attempt {attempt}/{max_attempts}: path={path}, roomId={rid} → ENTER_PLACE: {r}")
+        if r.get("entered"):
+            s = game_frame.evaluate(JS_GET_STATE)
+            cur_path = s.get("path")
+            if cur_path == lobby_path or rid == want_rid:
+                log(f"    ✓ in {lobby_path} (path={cur_path}, roomId={rid})")
+                return True
+        time.sleep(3)
         new_gf = find_game_frame(page, max_wait=15)
         if new_gf:
             game_frame = new_gf
@@ -407,8 +432,8 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
         final_path = game_frame.evaluate(JS_GET_STATE).get("path")
     except Exception:
         final_path = None
-    log(f"    [!] failed to select {lobby_path} (final path={final_path})")
-    return final_path == lobby_path
+    log(f"    [!] could not confirm {lobby_path} (final path={final_path})")
+    return False
 
 
 
@@ -595,6 +620,14 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     log("  [3] clicking Tạo (CREATE)...")
     game_frame.evaluate(JS_CLICK_TAO)
     time.sleep(5)
+    # Confirm WHERE the table was created (room must match the selected lobby)
+    try:
+        tpath = game_frame.evaluate(JS_GET_STATE).get("path")
+        log(f"    table place: {tpath}")
+        if tpath and not str(tpath).startswith(str(lobby) + "."):
+            log(f"    [!] table NOT in {lobby} — wrong room!")
+    except Exception:
+        pass
     
     # Step 5: Wait for opponent — WS signal (non-heartbeat msg) or ready button
     opp_joined = False
@@ -846,6 +879,7 @@ def main():
     parser.add_argument("--headless", default=os.environ.get("HEADLESS", "true").lower() == "true",
                         action="store_true", help="Run headless")
     args = parser.parse_args()
+    args.lobby = normalize_lobby(args.lobby)
 
     cookie_path = args.cookie
     if not os.path.isabs(cookie_path):
