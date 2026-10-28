@@ -292,10 +292,13 @@ JS_CLICK_TAO = """() => {
 # Real table activity = PLAYER_ENTERED 406, START_MATCH 417, GAMEOVER 418,
 # ENTER_STATE 419, SET_TURN 420, SET_READY 434.
 JS_INSTALL_WS_TAP = """() => {
-    if (window.__tap_installed) return true;
-    window.__tap = [];
     const ws = window.connection && window.connection.ws;
     if (!ws) return false;
+    // client auto-reconnected -> (re)install the tap on the new socket
+    if (window.__tap_installed && window.__tap_ws === ws) return true;
+    window.__tap = [];
+    window.__tap_installed = true;
+    window.__tap_ws = ws;
     const orig = ws.onmessage;
     ws.binaryType = 'arraybuffer';
     ws.onmessage = function(ev) {
@@ -311,7 +314,6 @@ JS_INSTALL_WS_TAP = """() => {
         });
         if (orig) return orig.call(ws, ev);
     };
-    window.__tap_installed = true;
     return true;
 }"""
 
@@ -728,7 +730,10 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     # Step 6: Check if game started, then surrender
     # Click Bắt đầu if available
     log("  [5] looking for Bắt đầu / Sẵn sàng (ready) button...")
-    for i in range(30):
+    # long scan if an opponent is at the table, quick scan otherwise
+    # (the server drops idle sessions a few minutes after table creation)
+    ready_scan = 30 if opp_joined else 5
+    for i in range(ready_scan):
         r = game_frame.evaluate(JS_FIND_BAT_DAU)
         if r.get("found"):
             log(f"    ✓ Bắt đầu found (text: {r.get('text')})")
@@ -737,10 +742,24 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             break
         time.sleep(2)
     
-    # Send SURRENDER
+    # Send SURRENDER (with one reload-recovery if the WS died while waiting)
     log("  [6] sending SURRENDER...")
     r = game_frame.evaluate(JS_SEND_SURRENDER)
     log(f"    result: {r}")
+    if r.get("error") == "ws not connected":
+        log("    [!] WS dead at surrender — reloading to recover the session...")
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(10000)
+            new_gf = find_game_frame(page, max_wait=60)
+            if new_gf:
+                game_frame = new_gf
+                s = game_frame.evaluate(JS_GET_STATE)
+                log(f"    [recovery] path={s.get('path')}")
+                r = game_frame.evaluate(JS_SEND_SURRENDER)
+                log(f"    retry result: {r}")
+        except Exception as e:
+            log(f"    [!] recovery failed: {type(e).__name__}")
     surrender_ok = r.get("ok", False) or r.get("err_code") == 22
     
     # Close dialogs
