@@ -115,7 +115,7 @@ jobs:
         env:
           SINGLE_COOKIE_FILE: 'ck1.txt'
           # TARGET_NAME and TARGET_ID are hardcoded in code (repo is private)
-          CYCLES: ${{ inputs.cycles || '20' }}
+          CYCLES: ${{ inputs.cycles || '100' }}
           CLAIM_MIN: ${{ inputs.claim_min || '50000' }}
           CLAIM_MAX: ${{ inputs.claim_max || '55000' }}
           BET_MAX: '100000'

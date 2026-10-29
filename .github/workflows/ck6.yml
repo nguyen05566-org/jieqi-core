@@ -114,7 +114,7 @@ jobs:
       - name: Run auto_cycle_ck6.py
         env:
           SINGLE_COOKIE_FILE: 'ck6.txt'
-          CYCLES: ${{ inputs.cycles || '20' }}
+          CYCLES: ${{ inputs.cycles || '100' }}
           CLAIM_MIN: ${{ inputs.claim_min || '50000' }}
           CLAIM_MAX: ${{ inputs.claim_max || '55000' }}
           BET_MAX: '100000'

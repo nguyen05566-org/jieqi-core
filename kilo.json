@@ -1,0 +1,20 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "provider": {
+    "google": {
+      "options": {
+        "apiKey": "REPLACE_WITH_GEMINI_KEY",
+        "baseURL": "https://generativelanguage.googleapis.com",
+        "timeout": 300000
+      },
+      "models": {
+        "gemini-pro": { "name": "gemini-pro" }
+      },
+      "whitelist": ["gemini-*"],
+      "blacklist": []
+    }
+  },
+  "enabled_providers": ["google"],
+  "model": "google/gemini-pro",
+  "small_model": "google/gemini-pro"
+}
