@@ -1587,5 +1587,16 @@ async def _run_bot():
     except KeyboardInterrupt: log.info("[BOT] Stopped by user")
     except Exception as e: log.error(f"[BOT] Error: {e}", exc_info=True)
 
-if __name__ == "__main__": main()
+def _arena10k_restart_loop():
+    while True:
+        try:
+            main()
+        except Exception as e:
+            log.error(f"[RESTART] arena10k run error: {e}")
+        print("[RESTART] arena10k sleeping 120s before restart...")
+        time.sleep(120)
+
+
+if __name__ == "__main__":
+    _arena10k_restart_loop()
 elif 'ipykernel' in sys.modules or 'google.colab' in sys.modules: main()
