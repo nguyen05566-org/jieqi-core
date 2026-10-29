@@ -103,6 +103,7 @@ else:
 EMBRYO_TIMEOUT = 2000  # 2 giây (trần tối đa 2s/nước)
 EMBRYO_MOVE_TIMEOUT = 15.0  # giây – timeout cứng cho toàn bộ khâu tính nước (chống treo engine)
 EMBRYO_MATCH_TIMEOUT = 1800000  # 1800s = 30 phút - theo BOT_MATCH_DURATION = '1800'
+EMBRYO_VERSION = "1.2.3"  # Embryo Caro6 engine version
 
 def auto_download_embryo() -> Optional[str]:
     binary_path = ENGINE_DIR / EMBRYO_BINARY
@@ -110,7 +111,15 @@ def auto_download_embryo() -> Optional[str]:
         try:
             binary_path.chmod(0o755)
         except Exception: pass
-        return str(binary_path)
+        # Validate existing binary
+        if not _validate_embryo_binary(binary_path):
+            log.warning("[Embryo] Existing binary failed validation, re-downloading...")
+            try:
+                binary_path.unlink()
+            except Exception:
+                pass
+        else:
+            return str(binary_path)
     log.info(f"[Embryo] Downloading Embryo ({'Windows' if sys.platform.startswith('win') else 'Linux'} Caro6) ...")
     ENGINE_DIR.mkdir(parents=True, exist_ok=True)
     try:
@@ -120,9 +129,10 @@ def auto_download_embryo() -> Optional[str]:
         if getattr(EMBRYO_ARCHIVE, "lower", lambda: "")() == "zip" or EMBRYO_ARCHIVE == "zip":
             import zipfile, io
             with urllib.request.urlopen(req, timeout=300) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status} downloading embryo zip")
                 data = resp.read()
             z = zipfile.ZipFile(io.BytesIO(data))
-            # find an exe inside
             member = None
             for n in z.namelist():
                 if n.lower().endswith(".exe"):
@@ -142,6 +152,8 @@ def auto_download_embryo() -> Optional[str]:
             import bz2
             bz2_path = str(binary_path) + ".bz2"
             with urllib.request.urlopen(req, timeout=120) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status} downloading embryo bz2")
                 with open(bz2_path, "wb") as out:
                     out.write(resp.read())
             with open(bz2_path, "rb") as src_bz2, open(binary_path, "wb") as dst:
@@ -152,10 +164,38 @@ def auto_download_embryo() -> Optional[str]:
         try:
             binary_path.chmod(0o755)
         except Exception: pass
+        # Validate downloaded binary
+        if not _validate_embryo_binary(binary_path):
+            log.error("[Embryo] Downloaded binary failed validation")
+            try:
+                binary_path.unlink()
+            except Exception:
+                pass
+            return None
         return str(binary_path)
     except Exception as e:
         log.error(f"[Embryo] Download failed: {e}")
         return None
+
+
+def _validate_embryo_binary(path: Path) -> bool:
+    """Validate that the file is actually an executable binary."""
+    if not path.exists() or not path.is_file():
+        return False
+    try:
+        size = path.stat().st_size
+        if size < 1000:  # Too small to be a real engine
+            return False
+        with open(path, "rb") as f:
+            header = f.read(4)
+        if sys.platform.startswith("win"):
+            # Windows PE: MZ header
+            return header[:2] == b"MZ"
+        else:
+            # Linux ELF: \x7fELF
+            return header == b"\x7fELF"
+    except Exception:
+        return False
 
 def detect_embryo_binary() -> Optional[str]:
     if not ENGINE_DIR.exists(): return None
@@ -165,6 +205,11 @@ def detect_embryo_binary() -> Optional[str]:
         except Exception: pass
         return str(b)
     for f in ENGINE_DIR.glob("pbrain-embryo*"):
+        # Skip compressed archives - only accept actual binaries
+        if f.suffix in (".bz2", ".zip", ".gz", ".xz"):
+            continue
+        try: f.chmod(0o755)
+        except Exception: pass
         return str(f)
     return None
 
@@ -316,24 +361,42 @@ class EmbryoEngine:
     def restart_game(self) -> bool:
         with self.lock:
             if not self._initialized or not self.proc or self.proc.poll() is not None:
+                log.warning("[Embryo] restart_game: process not initialized or dead")
                 return False
-            self._match_start_mono = time.monotonic()
-            self.time_left_ms = self.match_timeout_ms
-            self._send("RESTART")
-            for _ in range(5):
-                line = self._read_line(timeout=2.0)
-                if line.upper() == "OK":
-                    break
-            self._send("RECTSTART 15,19")
-            for _ in range(5):
-                line = self._read_line(timeout=2.0)
-                if line.upper() == "OK":
-                    break
-            self._synced = False
-            self._send_time_infos()
-            self._send("INFO ponder 1")
-            log.info("[Embryo] RESTART + ponder OK (opening book active)")
-            return True
+            try:
+                self._match_start_mono = time.monotonic()
+                self.time_left_ms = self.match_timeout_ms
+                self._send("RESTART")
+                got_ok = False
+                for _ in range(5):
+                    line = self._read_line(timeout=2.0)
+                    if line.upper() == "OK":
+                        got_ok = True
+                        break
+                if not got_ok:
+                    log.warning("[Embryo] RESTART did not receive OK")
+                    self._synced = False
+                    return False
+                self._send("RECTSTART 15,19")
+                got_ok = False
+                for _ in range(5):
+                    line = self._read_line(timeout=2.0)
+                    if line.upper() == "OK":
+                        got_ok = True
+                        break
+                if not got_ok:
+                    log.warning("[Embryo] RECTSTART did not receive OK")
+                    self._synced = False
+                    return False
+                self._synced = False
+                self._send_time_infos()
+                self._send("INFO ponder 1")
+                log.info("[Embryo] RESTART + ponder OK (opening book active)")
+                return True
+            except Exception as e:
+                log.error(f"[Embryo] restart_game error: {e}")
+                self._synced = False
+                return False
 
     def get_move(self, board_history: list, my_side: int) -> Optional[Tuple[int, int]]:
         with self.lock:
