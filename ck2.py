@@ -138,6 +138,21 @@ def log(msg=""):
     print(msg, flush=True)
 
 
+def save_context_cookies(ctx, path):
+    """Write live cookies from the browser context to a cookie file."""
+    try:
+        cookies = ctx.cookies()
+        pairs = [f"{c.get('name')}={c.get('value')}" for c in cookies]
+        content = "; ".join(pairs)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content.strip() + "\n")
+        log(f"[cookie] saved {len(cookies)} cookies -> {path}")
+        return content.strip()
+    except Exception as e:
+        log(f"[cookie] save failed: {type(e).__name__}: {e}")
+        return None
+
+
 # ---- JS helpers ----
 JS_CLOSE_POPUPS = """() => {
     for (const b of document.querySelectorAll('.popup_button.confirm-button, button')) {
@@ -1200,7 +1215,7 @@ def _run_cycle(args, game_frame, page, cycle_num, cycle_results):
     return game_frame
 
 
-def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
+def restart_browser(page, browser, p, cookies, fp, ctx, headless=True, save_path: str = ""):
     """Close and relaunch browser + context to prevent crashes.
     Returns (browser, ctx, page, game_frame)."""
     log("  [restart] closing browser context to prevent crash accumulation...")
@@ -1218,6 +1233,8 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
     )
     ctx.add_init_script(al.build_stealth_js(fp))
     ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
+    if save_path:
+        save_context_cookies(ctx, save_path)
     page = ctx.new_page()
     page.set_default_timeout(45000)
     page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
@@ -1276,6 +1293,8 @@ def main():
                         help="Seconds to wait for opponent after creating the table (default: 180 = 3 minutes)")
     parser.add_argument("--headless", default=os.environ.get("HEADLESS", "true").lower() == "true",
                         action="store_true", help="Run headless")
+    parser.add_argument("--save-cookies", default=os.environ.get("SAVE_COOKIES", ""),
+                        help="Save refreshed cookies from the browser context to this file (e.g. ck2.txt)")
     args = parser.parse_args()
     args.lobby = normalize_lobby(args.lobby)
 
@@ -1306,6 +1325,8 @@ def main():
         )
         ctx.add_init_script(al.build_stealth_js(fp))
         ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
+        if args.save_cookies.strip():
+            save_context_cookies(ctx, args.save_cookies.strip())
         page = ctx.new_page()
         page.set_default_timeout(45000)
 
@@ -1363,7 +1384,7 @@ def main():
             # Proactive browser restart between cycles to prevent crash accumulation
             if cycle_num > 1:
                 browser, ctx, page, game_frame = restart_browser(
-                    page, browser, p, cookies, fp, ctx, headless=args.headless
+                    page, browser, p, cookies, fp, ctx, headless=args.headless, save_path=args.save_cookies.strip()
                 )
                 if not game_frame:
                     log("[!] failed to restart browser — stopping")
@@ -1393,6 +1414,8 @@ def main():
                         )
                         ctx.add_init_script(al.build_stealth_js(fp))
                         ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
+                        if args.save_cookies.strip():
+                            save_context_cookies(ctx, args.save_cookies.strip())
                         page = ctx.new_page()
                         page.set_default_timeout(45000)
                         page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
