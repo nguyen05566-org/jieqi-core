@@ -166,12 +166,12 @@ JS_CLICK_CREATE = """() => {
 
 # Gomoku UI navigation (for surrender phase)
 JS_CLICK_CHON_BAN = """() => {
-    const vietnamese = ['Chọn bàn'];
-    const english = ['Find Table', 'Select Table', 'Choose Table'];
+    const vietnamese = ['Chọn bàn', 'Chọn ban', 'Chọn Bàn'];
+    const english = ['Find Table', 'Find table', 'Select Table', 'Select table', 'Choose Table', 'Choose table'];
     const keywords = vietnamese.concat(english);
     for (const b of document.querySelectorAll('a, button')) {
-        const t = (b.innerText || '').trim();
-        if (keywords.some(k => t === k) && b.offsetParent !== null) { b.click(); return true; }
+        const t = (b.innerText || '').trim().toLowerCase();
+        if (keywords.some(k => k.toLowerCase() === t) && b.offsetParent !== null) { b.click(); return true; }
     }
     return false;
 }"""
@@ -695,8 +695,8 @@ def find_target_table(game_frame, target_name, bet_max):
     return None
 
 
-def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
-    """Find a table where target_id is one of the players.
+def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30, target_name=""):
+    """Find a table where target_id is one of the players, or by player name.
     Uses WS tap approach (faster than DOM popup parsing):
       1. Install WS message tap (if not installed yet)
       2. For each table: clear tap, click table, check WS messages for target_id bytes
@@ -705,6 +705,8 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
     This works because when we click a table, server sends PLAYER_ENTERED (0x019E)
     message containing player_ids of all players in that table. We search the
     binary data for target_id (4-byte BE int32) — no DOM parsing needed.
+
+    Also supports name-based matching from the initial scan (t['player']).
     """
     import struct
     target_be = struct.pack('>I', int(target_id))
@@ -720,6 +722,23 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30):
 
     log(f"  [scan-by-id] {len(tables)} tables visible — clicking each, checking WS for target_id={target_id}")
     tables_to_scan = tables[:max_tables_to_scan]
+
+    found_table = None
+
+    # Name-based quick match from scan results
+    tn = (target_name or "").strip().lower()
+    if tn:
+        for t in tables_to_scan:
+            pname = (t.get('player') or '').lower()
+            if tn and tn in pname:
+                log(f"  ✓✓✓ FOUND target by name '{t.get('player')}' at table {t['id']} (bet: {t.get('bet')})")
+                found_table = t
+                break
+        if found_table:
+            bet_val = parse_bet(found_table.get("bet", "999999"))
+            if bet_val <= bet_max:
+                return found_table
+            log(f"  [scan-by-id] found by name but bet {bet_val:,} > bet_max {bet_max:,} — skipping")
 
     found_table = None
     for t in tables_to_scan:
@@ -798,7 +817,7 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
     while time.time() < deadline:
         attempt += 1
         if use_id:
-            target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
+            target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan, target_name=target_name)
         else:
             target = find_target_table(game_frame, target_name, bet_max)
         if target:
@@ -808,7 +827,7 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
         game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
         time.sleep(2)
         if use_id:
-            target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
+            target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan, target_name=target_name)
         else:
             target = find_target_table(game_frame, target_name, bet_max)
         if target:
