@@ -40,10 +40,10 @@ jobs:
           CARO_USER1: ${{ secrets.CARO_USER1 || secrets.CARO_USER }}
           CARO_PASSWD1: ${{ secrets.CARO_PASSWD1 || secrets.CARO_PASSWD }}
         run: |
-          echo "Starting arena11k.py; it will auto-restart until job timeout (6h)"
+          echo "Starting arena10k.py; it will auto-restart until job timeout (6h)"
           while true; do
-            echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') Starting arena11k.py ==="
-            python3 arena11k.py || echo "arena11k.py exited with code $?"
-            echo "Restarting arena11k.py in 10 seconds"
+            echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') Starting arena10k.py ==="
+            python3 arena10k.py || echo "arena10k.py exited with code $?"
+            echo "Restarting arena10k.py in 10 seconds"
             sleep 10
           done
