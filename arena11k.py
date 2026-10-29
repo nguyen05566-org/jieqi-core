@@ -488,13 +488,8 @@ class EmbryoEngine:
 WS_URL = "wss://gamevh.net/ws/gameServer"
 GAME_URL = "https://gamevh.net/play/caro/0"
 # === CẤU HÌNH TRỰC TIẾP - KHÔNG CẦN SECRETS ===
-<<<<<<< HEAD
-CARO_USER_DIRECT = "test2"
-CARO_PASSWD_DIRECT = "a12346"
-=======
 CARO_USER_DIRECT = "nanglonganhtalamchi"
 CARO_PASSWD_DIRECT = "((()))"
->>>>>>> 30ec2c8f57aaf37c2d9bd7e16bb1ea1bc700421c
 def _clean_env(val: Optional[str], default: str) -> str:
     if val and str(val).strip(): return str(val).strip()
     return default
@@ -525,11 +520,7 @@ else:
     try:
         BOT_BET_XU = int((input("Nhap muc cuoc (xu) [40000]: ").strip() or "40000"))
     except Exception:
-<<<<<<< HEAD
         BOT_BET_XU = 40000
-=======
-        BOT_BET_XU = 1000
->>>>>>> 30ec2c8f57aaf37c2d9bd7e16bb1ea1bc700421c
 BOT_MATCH_DURATION = '1800'
 BOT_TURN_DURATION = '60'
 EMPTY = -1
