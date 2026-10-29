@@ -520,7 +520,7 @@ else:
     try:
         BOT_BET_XU = int((input("Nhap muc cuoc (xu) [40000]: ").strip() or "40000"))
     except Exception:
-        BOT_BET_XU = 100
+        BOT_BET_XU = 1000
 BOT_MATCH_DURATION = '1800'
 BOT_TURN_DURATION = '60'
 EMPTY = -1
