@@ -885,7 +885,7 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
     return None
 
 
-def surrender_one_round(game_frame, page, target_name, target_id, bet_max, target_wait_seconds=60, max_tables_to_scan=30):
+def surrender_one_round(game_frame, page, context, browser, target_name, target_id, bet_max, target_wait_seconds=60, max_tables_to_scan=30):
     """Find target table → join → SURRENDER. Returns (success, balance_lost).
     If target_id > 0, search by ID (preferred). Else search by name.
     """
@@ -1020,6 +1020,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
             log(f"    [surrender {s+1}] err: {e}")
         time.sleep(1)
     time.sleep(1)
+    # Close page/context/browser properly before restart for claim
     try:
         if page and not page.is_closed():
             page.close()
@@ -1035,10 +1036,10 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
             browser.close()
     except Exception:
         pass
-    raise BrowserCrashed("surrender done - restart for claim")
+    raise SurrenderDone("surrender done - restart for claim")
 
 
-def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_opponent=True, 
+def create_own_table_and_surrender(game_frame, page, context, browser, bet_amount=40000, wait_for_opponent=True, 
                                     opponent_wait_seconds=120, min_balance=1000):
     """Create own table with specified bet, wait for opponent, then SURRENDER.
     
@@ -1187,7 +1188,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             except Exception:
                 pass
             try:
-                if context and not context.pages:
+                if context:
                     context.close()
             except Exception:
                 pass
@@ -1196,7 +1197,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
                     browser.close()
             except Exception:
                 pass
-            raise BrowserCrashed("game ended - restarting to claim")
+            raise SurrenderDone("game ended - restarting to claim")
         if "không tham gia" in err_msg or "chưa tham gia" in err_msg:
             log("    [!] chưa là người chơi - chờ 2s rồi thử lại...")
             try:
@@ -1253,7 +1254,12 @@ class StopCycle(Exception):
 
 
 class BrowserCrashed(Exception):
-    """Raise when browser/page/frame is closed unexpectedly."""
+    """Raise when browser/page/frame is closed unexpectedly (genuine crash)."""
+    pass
+
+
+class SurrenderDone(Exception):
+    """Raise when surrender phase is complete and we should restart for the next claim cycle (intentional, not a crash)."""
     pass
 
 
@@ -1316,49 +1322,63 @@ def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
             raise StopCycle
 
     # PHASE 2: SURRENDER
-    if args.mode == "create_own_table":
-        bet_amount = args.bet_amount
-        if final_bal < bet_amount:
-            log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu) ===")
-            log(f"  [SKIP] balance {final_bal:,} < bet {bet_amount:,} — not enough funds")
-            cycle_results.append({
-                "cycle": cycle_num,
-                "balance_after_claim": final_bal,
-                "surrender_ok": False,
-                "xu_lost": 0,
-            })
-            if cycle_num < args.cycles:
-                time.sleep(args.delay_between_cycles)
-            return
-        log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
-        ok, lost = create_own_table_and_surrender(
-            game_frame, page, bet_amount=bet_amount,
-            wait_for_opponent=args.wait_for_opponent,
-            opponent_wait_seconds=args.opponent_wait_seconds,
-            min_balance=args.min_balance,
-        )
-        target_label = "self-created table"
-    else:
-        log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
-        ok, lost = surrender_one_round(game_frame, page, args.target_name, args.target_id, args.bet_max,
-                                       target_wait_seconds=args.target_wait_seconds,
-                                       max_tables_to_scan=args.max_tables_to_scan)
-        target_label = f"target '{args.target_name}' (id={args.target_id})"
+    ok = False
+    lost = 0
+    target_label = ""
+    try:
+        if args.mode == "create_own_table":
+            bet_amount = args.bet_amount
+            if final_bal < bet_amount:
+                log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu) ===")
+                log(f"  [SKIP] balance {final_bal:,} < bet {bet_amount:,} — not enough funds")
+                cycle_results.append({
+                    "cycle": cycle_num,
+                    "balance_after_claim": final_bal,
+                    "surrender_ok": False,
+                    "xu_lost": 0,
+                })
+                if cycle_num < args.cycles:
+                    time.sleep(args.delay_between_cycles)
+                return
+            log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
+            ok, lost = create_own_table_and_surrender(
+                game_frame, page, ctx, browser, bet_amount=bet_amount,
+                wait_for_opponent=args.wait_for_opponent,
+                opponent_wait_seconds=args.opponent_wait_seconds,
+                min_balance=args.min_balance,
+            )
+            target_label = "self-created table"
+        else:
+            log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
+            ok, lost = surrender_one_round(game_frame, page, ctx, browser, args.target_name, args.target_id, args.bet_max,
+                                           target_wait_seconds=args.target_wait_seconds,
+                                           max_tables_to_scan=args.max_tables_to_scan)
+            target_label = f"target '{args.target_name}' (id={args.target_id})"
 
-    total_xu_to_target += lost
-    cycle_results.append({
-        "cycle": cycle_num,
-        "balance_after_claim": final_bal,
-        "surrender_ok": ok,
-        "xu_lost": lost,
-    })
-    log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target:,}")
+        total_xu_to_target += lost
+        cycle_results.append({
+            "cycle": cycle_num,
+            "balance_after_claim": final_bal,
+            "surrender_ok": ok,
+            "xu_lost": lost,
+        })
+        log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target:,}")
 
-    # Re-find game frame for status reporting
-    new_gf = find_game_frame(page, max_wait=10)
-    if new_gf:
-        game_frame = new_gf
-    return game_frame
+        # Re-find game frame for status reporting
+        new_gf = find_game_frame(page, max_wait=10)
+        if new_gf:
+            game_frame = new_gf
+        return game_frame
+
+    except SurrenderDone as e:
+        log(f"[SUCCEED] surrender completed — restarting for claim: {e}")
+        raise
+    except BrowserCrashed as e:
+        log(f"[ERROR] browser crashed during surrender: {e}")
+        raise
+    except Exception as e:
+        log(f"[ERROR] unexpected error during surrender: {type(e).__name__}: {e}")
+        raise
 
 
 def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
