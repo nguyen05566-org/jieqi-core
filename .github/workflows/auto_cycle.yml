@@ -159,7 +159,7 @@ jobs:
 
           # Run with auto-restart loop (will restart on crash, exit after 5h)
           START_TIME=$SECONDS
-          MAX_RUNTIME=$((5 * 3600))  # 5 hours max
+          MAX_RUNTIME=$((6 * 3600))  # 6 hours max
           while true; do
             ELAPSED=$((SECONDS - START_TIME))
             if [ $ELAPSED -gt $MAX_RUNTIME ]; then
@@ -174,11 +174,11 @@ jobs:
               echo "Bot exited successfully"
               break
             elif [ $EXIT_CODE -eq 2 ]; then
-              echo "Browser crashed (exit 2) — restarting in 10s"
-              sleep 10
+              echo "Browser crashed (exit 2) — restarting in 30s"
+              sleep 30
             else
-              echo "Unknown exit code — restarting in 10s"
-              sleep 10
+              echo "Unknown exit code — restarting in 30s"
+              sleep 30
             fi
           done
 
