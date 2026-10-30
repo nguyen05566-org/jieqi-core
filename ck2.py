@@ -1034,49 +1034,65 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             break
         time.sleep(2)
     
-    # SURRENDER — click the 🏳 flag like the UI does (canvas button ->
-    # app.fireStateCommand), with the raw WS command as fallback
-    log("  [6] surrendering via the match FLAG icon (🏳)...")
+    # SURRENDER — wait ~3s then retry until balance changes (confirm success)
+    log("  [6] waiting ~3s, sending SURRENDER repeatedly until balance decreases...")
+    time.sleep(3)
+    bal_surr_check, _ = get_balance(game_frame)
     surrender_ok = False
     flag_used = False
-    try:
-        surrender_ok, flag_detail = surrender_via_flag(game_frame, page)
-        flag_used = surrender_ok
-        log(f"    flag surrender: {surrender_ok} ({flag_detail})")
-    except Exception as e:
-        log(f"    [!] flag surrender path failed: {type(e).__name__}: {e}")
-    if flag_used:
-        log("  [6✓] surrender sent via the flag icon (UI path)")
-    else:
-        log("  [6b] flag path failed — falling back to raw WS SURRENDER...")
-        r = game_frame.evaluate(JS_SEND_SURRENDER)
-        log(f"    result: {r}")
-        if r.get("error") == "ws not connected":
-            log("    [!] WS dead at surrender — active reconnect + retry (no reload first)...")
-            game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=60)
-            if ws_ok:
-                r = game_frame.evaluate(JS_SEND_SURRENDER)
-                log(f"    retry result: {r}")
-            if not ws_ok or r.get("error") == "ws not connected":
-                log("    [!] still dead — reloading to recover the session...")
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=60000)
-                    page.wait_for_timeout(10000)
-                    new_gf = find_game_frame(page, max_wait=60)
-                    if new_gf:
-                        game_frame = new_gf
-                        s = game_frame.evaluate(JS_GET_STATE)
-                        log(f"    [recovery] path={s.get('path')}")
-                        # wait for the WS BEFORE retrying — 10s is not enough after reload
-                        game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=75)
-                        if ws_ok:
-                            r = game_frame.evaluate(JS_SEND_SURRENDER)
-                            log(f"    retry result: {r}")
-                        else:
-                            log("    [!] WS still not connected — surrender not sent")
-                except Exception as e:
-                    log(f"    [!] recovery failed: {type(e).__name__}")
-        surrender_ok = r.get("ok", False) or r.get("err_code") == 22
+    last_r = {}
+    for s in range(40):
+        # Try UI flag every 4 attempts to mimic human click
+        if s % 4 == 0:
+            try:
+                okf, flag_detail = surrender_via_flag(game_frame, page)
+                flag_used = flag_used or okf
+                if okf:
+                    log(f"    [flag {s+1}] ok ({flag_detail})")
+            except Exception as e:
+                log(f"    [flag {s+1}] err: {type(e).__name__}")
+        # Fallback/raw WS SURRENDER
+        try:
+            last_r = game_frame.evaluate(JS_SEND_SURRENDER)
+            log(f"    [ws {s+1}] {last_r}")
+        except Exception as e:
+            log(f"    [ws {s+1}] err: {e}")
+            last_r = {}
+        time.sleep(2)
+        try:
+            bal_now, _ = get_balance(game_frame)
+        except Exception:
+            bal_now = bal_surr_check
+        if bal_now < bal_surr_check:
+            lost = bal_surr_check - bal_now
+            log(f"    ✓ SURRENDER confirmed - balance changed: -{lost:,} xu")
+            surrender_ok = True
+            bal_surr_check = bal_now
+            break
+        err_msg = str(last_r.get("err_msg", "")).lower()
+        if "không tham gia" in err_msg or "chưa tham gia" in err_msg or "không được" in err_msg or "not a player" in err_msg:
+            log("    [!] chưa là người chơi / chưa được phép - chờ 2-3s rồi thử lại...")
+            time.sleep(3)
+            # ensure WS alive
+            try:
+                game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=15)
+            except Exception:
+                pass
+            continue
+        if last_r.get("error") == "ws not connected":
+            log("    [!] WS dead - trying to reconnect...")
+            try:
+                game_frame, ws_ok = wait_ws_connected(game_frame, page, max_wait=30)
+            except Exception:
+                pass
+            time.sleep(2)
+            continue
+        if last_r.get("ok") or last_r.get("err_code") == 22:
+            time.sleep(3)
+            continue
+        time.sleep(2)
+    if not surrender_ok:
+        log("    [!] chưa thấy số dư thay đổi sau nhiều lần thử - vẫn tiếp tục xử lý dialog")
     
     # Close dialogs
     log("  [7] closing dialog + returning to lobby...")
