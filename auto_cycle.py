@@ -365,13 +365,16 @@ JS_SEND_SURRENDER = """() => new Promise((resolve) => {
 })"""
 
 JS_CLICK_OK = """() => {
-    for (const b of document.querySelectorAll('.popup_button.confirm-button, button, input[type=button], a')) {
-        if (b.offsetParent === null) continue;
+    const patterns = ['OK','Đồng ý','Tiếp tục','Đóng','Chơi lại','Về lobby','Về phòng chờ','Về sảnh','Trở về','Rời bàn','Thoát','Quay về','Về ph\u00f2ng'];
+    for (const b of document.querySelectorAll('.popup_button.confirm-button, .popup-button, button, input[type=button], a, div[role=button]')) {
+        if (b.offsetParent === null && b.style && b.style.display === 'none') continue;
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
         const t = (b.innerText || b.textContent || b.value || '').trim();
-        if (/^(OK|Đồng ý|Tiếp tục|Đóng|Chơi lại|Về lobby|Về phòng chờ)$/i.test(t)) {
-            b.click(); return {clicked: true, text: t};
+        if (!t) continue;
+        if (patterns.some(p => t === p) || /về\s*(sảnh|lobby|phòng)/i.test(t) || /rời|thoát|trở về/i.test(t)) {
+            try { b.click(); } catch(e) {}
+            return {clicked: true, text: t};
         }
     }
     return {clicked: false};
@@ -485,29 +488,55 @@ def is_browser_alive(page):
         return False
 
 
-def ensure_in_lobby(game_frame, page, max_attempts=3):
-    """Make sure we're back at Lobby (not in a table).
-    
-    On Facebook Gaming, lobby paths include: Lobby, Lobby.caro, Lobby.caro.0, etc.
-    """
+def ensure_in_lobby(game_frame, page, max_attempts=6):
+    """Make sure we're back at Lobby (not in a table)."""
     fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-    for _ in range(max_attempts):
+    for a in range(max_attempts):
+        try:
+            s = game_frame.evaluate(JS_GET_STATE)
+            path = s.get("path")
+            if path in fb_lobby_paths or path == "Lobby":
+                return True
+            log(f"  [nav] path={path} — leaving table (attempt {a+1}/{max_attempts})...")
+            # try to close dialogs first
+            for _ in range(3):
+                try:
+                    game_frame.evaluate(JS_CLICK_OK)
+                except Exception:
+                    pass
+                time.sleep(1)
+            # try leave functions
+            for _ in range(3):
+                try:
+                    game_frame.evaluate(JS_GO_LOBBY)
+                except Exception:
+                    pass
+                time.sleep(1)
+            # try find exit/leave buttons
+            try:
+                game_frame.evaluate("""() => {
+                    const texts = ['Về sảnh','Về lobby','Về phòng','Trở về','Rời bàn','Thoát','Quay về'];
+                    for (const b of document.querySelectorAll('button,input[type=button],a,div[role=button]')) {
+                        if (b.offsetParent === null) continue;
+                        const t = (b.innerText||b.textContent||b.value||'').trim();
+                        if (texts.some(x=>t===x||t.includes(x))) { try{b.click();}catch(e){} }
+                    }
+                }""")
+            except Exception:
+                pass
+            time.sleep(2)
+            new_gf = find_game_frame(page, max_wait=20)
+            if new_gf:
+                game_frame = new_gf
+        except Exception as e:
+            log(f"  [nav] ensure_in_lobby err: {e}")
+            time.sleep(2)
+    try:
         s = game_frame.evaluate(JS_GET_STATE)
         path = s.get("path")
-        if path in fb_lobby_paths or path == "Lobby":
-            return True
-        log(f"  [nav] path={path} — leaving table...")
-        try:
-            game_frame.evaluate(JS_GO_LOBBY)
-        except Exception as e:
-            log(f"  [nav] leave err: {type(e).__name__}")
-        time.sleep(2)
-        new_gf = find_game_frame(page, max_wait=15)
-        if new_gf:
-            game_frame = new_gf
-    s = game_frame.evaluate(JS_GET_STATE)
-    path = s.get("path")
-    return path in fb_lobby_paths or path == "Lobby"
+        return path in fb_lobby_paths or path == "Lobby"
+    except Exception:
+        return False
 
 
 DEFAULT_GOMOKU_LOBBY = "Loby.caro.0"
@@ -989,14 +1018,25 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     # Step 7: close game-over dialog + return to lobby
     log("  [7] closing dialog + returning to lobby...")
     time.sleep(3)
-    for _ in range(5):
-        clicked = game_frame.evaluate(JS_CLICK_OK)
-        if clicked.get("clicked"):
-            log(f"    closed dialog: {clicked}")
-            time.sleep(1)
-            break
+    for _ in range(10):
+        try:
+            clicked = game_frame.evaluate(JS_CLICK_OK)
+            if clicked.get("clicked"):
+                log(f"    closed dialog: {clicked}")
+                time.sleep(2)
+                break
+        except Exception:
+            pass
         time.sleep(1)
-
+    # force leave table multiple times
+    for _ in range(5):
+        try:
+            game_frame.evaluate(JS_GO_LOBBY)
+        except Exception:
+            pass
+        time.sleep(2)
+    ensure_in_lobby(game_frame, page)
+    time.sleep(2)
     ensure_in_lobby(game_frame, page)
 
     # Final balance
@@ -1153,13 +1193,23 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     # Close dialogs
     log("  [7] closing dialog + returning to lobby...")
     time.sleep(3)
-    for _ in range(5):
-        clicked = game_frame.evaluate(JS_CLICK_OK)
-        if clicked.get("clicked"):
-            time.sleep(1)
-            break
+    for _ in range(10):
+        try:
+            clicked = game_frame.evaluate(JS_CLICK_OK)
+            if clicked.get("clicked"):
+                time.sleep(2)
+                break
+        except Exception:
+            pass
         time.sleep(1)
-    
+    for _ in range(5):
+        try:
+            game_frame.evaluate(JS_GO_LOBBY)
+        except Exception:
+            pass
+        time.sleep(2)
+    ensure_in_lobby(game_frame, page)
+    time.sleep(2)
     ensure_in_lobby(game_frame, page)
     
     # Final balance
