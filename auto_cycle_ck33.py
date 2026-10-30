@@ -744,12 +744,12 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30, tar
     for t in tables_to_scan:
         # Close any existing popup
         game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-        time.sleep(0.2)
+        time.sleep(0.1)
         # Clear tap before click (so new messages are only from this click)
         game_frame.evaluate(JS_CLEAR_TAP)
         # Click this table
         game_frame.evaluate(JS_CLICK_TABLE, t["id"])
-        time.sleep(1.0)  # wait for PLAYER_ENTERED to arrive
+        time.sleep(0.3)  # wait for PLAYER_ENTERED to arrive (reduced from 1.0s)
         # Check tap messages for target_id
         tap = game_frame.evaluate(JS_GET_TAP)
         for msg in tap:
@@ -766,7 +766,7 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30, tar
 
     # Close any popup before returning
     game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-    time.sleep(0.3)
+    time.sleep(0.1)
 
     if not found_table:
         log(f"  [scan-by-id] target_id={target_id} not found in any of the {len(tables_to_scan)} tables scanned")
@@ -935,56 +935,78 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
         log("    [!] Vào chơi not found — table may be full or rejected")
         return False, 0
 
-    # Step 5: wait for "Bắt đầu" button (or game may have auto-started)
-    log("  [5] waiting for Bắt đầu button (max 30s)...")
-    found_start = False
-    for i in range(15):
-        r = game_frame.evaluate(JS_FIND_BAT_DAU)
-        if r.get("found"):
-            log(f"    ✓ Bắt đầu found (text: {r.get('text')})")
-            game_frame.evaluate(JS_CLICK_BAT_DAU)
-            log(f"    → clicked Bắt đầu, waiting 5s for game start...")
-            time.sleep(5)
-            found_start = True
-            break
-        time.sleep(2)
-    if not found_start:
-        log("    [!] Bắt đầu not found — trying SURRENDER anyway")
+    # Step 5: detect if we're already in a match; if not, wait briefly for "Bắt đầu"
+    log("  [5] checking match state...")
+    in_match = False
+    try:
+        s = game_frame.evaluate(JS_GET_STATE)
+        p = s.get("path") or ""
+        import re as _re
+        if _re.match(r'^Lobby\.caro\.\d+\.\d+$', p):
+            in_match = True
+            log(f"    ✓ already in match (path={p})")
+    except Exception:
+        pass
 
-    # Step 6: send SURRENDER
-    log("  [6] sending SURRENDER...")
-    r = game_frame.evaluate(JS_SEND_SURRENDER)
-    log(f"    result: {r}")
-    surrender_ok = r.get("ok", False) or r.get("err_code") == 22
-
-    # If "Bạn không tham gia bàn chơi này" — wait + retry
-    if not surrender_ok and r.get("err_msg") and "không tham gia" in r.get("err_msg", ""):
-        log("    [!] not a player yet — waiting 10s + retry...")
-        time.sleep(10)
-        r = game_frame.evaluate(JS_SEND_SURRENDER)
-        log(f"    retry result: {r}")
-        surrender_ok = r.get("ok", False) or r.get("err_code") == 22
-
-    # Step 7: close game-over dialog + return to lobby
-    log("  [7] closing dialog + returning to lobby...")
-    time.sleep(3)
-    for _ in range(5):
-        clicked = game_frame.evaluate(JS_CLICK_OK)
-        if clicked.get("clicked"):
-            log(f"    closed dialog: {clicked}")
+    if not in_match:
+        log("  [5] waiting for Bắt đầu button (max 5s)...")
+        found_start = False
+        for i in range(3):
+            r = game_frame.evaluate(JS_FIND_BAT_DAU)
+            if r.get("found"):
+                log(f"    ✓ Bắt đầu found (text: {r.get('text')})")
+                game_frame.evaluate(JS_CLICK_BAT_DAU)
+                log(f"    → clicked Bắt đầu")
+                found_start = True
+                break
             time.sleep(1)
-            break
+        if not found_start:
+            log("    [!] Bắt đầu not found — will try SURRENDER anyway")
+        # Poll for match state (path change) up to 8s
+        for i in range(8):
+            try:
+                s = game_frame.evaluate(JS_GET_STATE)
+                p = s.get("path") or ""
+                import re as _re
+                if _re.match(r'^Lobby\.caro\.\d+\.\d+$', p):
+                    in_match = True
+                    log(f"    ✓ now in match (path={p})")
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+    if not in_match:
+        log("    [!] not in match yet — will try SURRENDER anyway")
+
+    # Step 6: send SURRENDER immediately (2x quickly) then exit for claim
+    log("  [*] gửi SURRENDER ngay (2 lần) rồi thoát để claim lại...")
+    for s in range(2):
+        try:
+            r = game_frame.evaluate(JS_SEND_SURRENDER)
+            log(f"    [surrender {s+1}] result: {r}")
+            err_msg = str(r.get("err_msg", "")).lower()
+            if "ván chơi đã kết thúc" in err_msg or "van choi da ket thuc" in err_msg:
+                break
+        except Exception as e:
+            log(f"    [surrender {s+1}] err: {e}")
         time.sleep(1)
-
-    ensure_in_lobby(game_frame, page)
-
-    # Final balance
-    bal_after, _ = get_balance(game_frame)
-    delta = bal_after - bal_before
-    log(f"  [done] balance: {bal_before:,} → {bal_after:,} (Δ={delta:+,})")
-    if delta < 0:
-        log(f"         ✓ lost {-delta:,} xu (transferred to target)")
-    return surrender_ok, max(0, -delta)
+    time.sleep(1)
+    try:
+        if page and not page.is_closed():
+            page.close()
+    except Exception:
+        pass
+    try:
+        if context:
+            context.close()
+    except Exception:
+        pass
+    try:
+        if browser:
+            browser.close()
+    except Exception:
+        pass
+    raise BrowserCrashed("surrender done - restart for claim")
 
 
 def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_opponent=True, 
