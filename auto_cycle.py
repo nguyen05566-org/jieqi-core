@@ -1180,8 +1180,8 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             break
         err_msg = str(r.get("err_msg", "")).lower()
         if "ván chơi đã kết thúc" in err_msg or "van choi da ket thuc" in err_msg:
-            log("    [!] ván chơi đã kết thúc - cố gắng rời bàn ngay...")
-            for _ in range(15):
+            log("    [!] ván chơi đã kết thúc - đóng browser để sang chu kỳ claim tiếp theo...")
+            for _ in range(10):
                 try:
                     game_frame.evaluate(JS_CLICK_OK)
                 except Exception:
@@ -1191,8 +1191,22 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
                 except Exception:
                     pass
                 time.sleep(1)
-            surrender_ok = False
-            break
+            try:
+                if page and not page.is_closed():
+                    page.close()
+            except Exception:
+                pass
+            try:
+                if context and not context.pages:
+                    context.close()
+            except Exception:
+                pass
+            try:
+                if browser:
+                    browser.close()
+            except Exception:
+                pass
+            raise BrowserCrashed("game ended - restarting to claim")
         if "không tham gia" in err_msg or "chưa tham gia" in err_msg:
             log("    [!] chưa là người chơi - chờ 2s rồi thử lại...")
             try:
