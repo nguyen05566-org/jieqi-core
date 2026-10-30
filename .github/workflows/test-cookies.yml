@@ -21,7 +21,7 @@ permissions:
 jobs:
   test-cookies:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +29,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install Playwright Chromium (real browser, like the bots)
+        run: |
+          pip install playwright
+          playwright install chromium --with-deps
 
       - name: Test all cookies (masked output only)
         run: python3 tools/test_cookies.py
