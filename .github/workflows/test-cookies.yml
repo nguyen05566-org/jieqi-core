@@ -1,0 +1,45 @@
+name: test-cookies
+
+# Lightweight cookie liveness check (plain HTTPS GET to facebook.com,
+# no game/bot launch). Runs on GitHub-hosted runner because the local
+# sandbox has no egress to facebook.com.
+# - workflow_dispatch: manual run (any branch)
+# - push: only on the arena test branch, only when tester/cookies change
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "arena/7e9fb419-jieqi-core"
+    paths:
+      - "tools/test_cookies.py"
+      - ".github/workflows/test-cookies.yml"
+      - "ck*.txt"
+
+permissions:
+  contents: read
+
+jobs:
+  test-cookies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test all cookies (masked output only)
+        run: python3 tools/test_cookies.py
+
+      - name: Upload results (no cookie values, masked ids only)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cookie-test-results_${{ github.run_id }}
+          path: |
+            cookie_test_results.json
+            cookie_test_results.md
+          if-no-files-found: ignore
+          retention-days: 7
