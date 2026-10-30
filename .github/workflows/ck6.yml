@@ -196,7 +196,7 @@ jobs:
             fingerprints/
             transfer_dests.json
           if-no-files-found: ignore
-          retention-days: 3
+          retention-days: 30
 
       - name: Auto-restart (continuous loop)
         # Auto-trigger lại workflow sau khi hoàn thành để chạy liên tục
