@@ -2,209 +2,209 @@
   {
     "file": "_control_no_cookie",
     "c_user": "-",
-    "status": "ERROR",
-    "http": 400,
-    "final": "https://www.facebook.com/me",
-    "evidence": "inconclusive response (no login redirect, no account id)"
+    "status": "DEAD",
+    "http": 200,
+    "final": "https://www.facebook.com/",
+    "evidence": "logged-out login form served"
   },
   {
     "file": "_control_bogus_cookie",
     "c_user": "***0000",
     "status": "DEAD",
-    "http": 400,
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "logged-out login form served"
   },
   {
     "file": "ck1.txt",
     "c_user": "***0865",
-    "status": "ERROR",
-    "http": 400,
-    "final": "https://www.facebook.com/me",
-    "evidence": "inconclusive response (no login redirect, no account id)"
+    "status": "ALIVE",
+    "http": 200,
+    "final": "https://www.facebook.com/",
+    "evidence": "page HTML USER_ID matches c_user"
   },
   {
     "file": "ck2.txt",
     "c_user": "***1412",
     "status": "DEAD",
-    "http": 400,
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "logged-out login form served"
   },
   {
     "file": "ck3.txt",
     "c_user": "***6072",
-    "status": "ERROR",
-    "http": 400,
-    "final": "https://www.facebook.com/me",
-    "evidence": "inconclusive response (no login redirect, no account id)"
+    "status": "ALIVE",
+    "http": 200,
+    "final": "https://www.facebook.com/",
+    "evidence": "page HTML USER_ID matches c_user"
   },
   {
     "file": "ck4.txt",
     "c_user": "***6240",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck5.txt",
     "c_user": "***0684",
-    "status": "ERROR",
-    "http": 400,
-    "final": "https://www.facebook.com/me",
-    "evidence": "inconclusive response (no login redirect, no account id)"
+    "status": "ALIVE",
+    "http": 200,
+    "final": "https://www.facebook.com/",
+    "evidence": "page HTML USER_ID matches c_user"
   },
   {
     "file": "ck6.txt",
     "c_user": "***4177",
-    "status": "ERROR",
-    "http": 400,
-    "final": "https://www.facebook.com/me",
-    "evidence": "inconclusive response (no login redirect, no account id)"
+    "status": "ALIVE",
+    "http": 200,
+    "final": "https://www.facebook.com/",
+    "evidence": "page HTML USER_ID matches c_user"
   },
   {
     "file": "ck7.txt",
     "c_user": "***1412",
     "status": "DEAD",
-    "http": 400,
+    "http": 200,
     "final": "https://www.facebook.com/",
     "evidence": "identical cookie to ck2.txt (not re-tested)"
   },
   {
     "file": "ck8.txt",
     "c_user": "***3148",
-    "status": "ERROR",
-    "http": 400,
-    "final": "https://www.facebook.com/me",
-    "evidence": "inconclusive response (no login redirect, no account id)"
+    "status": "ALIVE",
+    "http": 200,
+    "final": "https://www.facebook.com/",
+    "evidence": "page HTML USER_ID matches c_user"
   },
   {
     "file": "ck9.txt",
     "c_user": "***3148",
-    "status": "ERROR",
-    "http": 400,
-    "final": "https://www.facebook.com/me",
+    "status": "ALIVE",
+    "http": 200,
+    "final": "https://www.facebook.com/",
     "evidence": "identical cookie to ck8.txt (not re-tested)"
   },
   {
     "file": "ck10.txt",
     "c_user": "***6895",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck11.txt",
     "c_user": "***4614",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck12.txt",
     "c_user": "***1412",
     "status": "DEAD",
-    "http": 400,
+    "http": 200,
     "final": "https://www.facebook.com/",
     "evidence": "identical cookie to ck2.txt (not re-tested)"
   },
   {
     "file": "ck13.txt",
     "c_user": "***9340",
-    "status": "ERROR",
-    "http": 400,
-    "final": "https://www.facebook.com/me",
-    "evidence": "inconclusive response (no login redirect, no account id)"
+    "status": "ALIVE",
+    "http": 200,
+    "final": "https://www.facebook.com/",
+    "evidence": "page HTML USER_ID matches c_user"
   },
   {
     "file": "ck14.txt",
     "c_user": "***4225",
-    "status": "ERROR",
-    "http": 400,
-    "final": "https://www.facebook.com/me",
-    "evidence": "inconclusive response (no login redirect, no account id)"
+    "status": "ALIVE",
+    "http": 200,
+    "final": "https://www.facebook.com/",
+    "evidence": "page HTML USER_ID matches c_user"
   },
   {
     "file": "ck15.txt",
     "c_user": "***8320",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck20.txt",
     "c_user": "***1232",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck21.txt",
     "c_user": "***6009",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck30.txt",
     "c_user": "***6974",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck31.txt",
     "c_user": "***1487",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck32.txt",
     "c_user": "***9249",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck33.txt",
     "c_user": "***9590",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck34.txt",
     "c_user": "***6638",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck35.txt",
     "c_user": "***1268",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   },
   {
     "file": "ck36.txt",
     "c_user": "***7996",
-    "status": "DEAD",
-    "http": 400,
+    "status": "ERROR",
+    "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "server deleted c_user/xs cookie"
+    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False"
   }
 ]
