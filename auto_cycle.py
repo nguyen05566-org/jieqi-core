@@ -965,9 +965,9 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
         return False, 0
 
     # Step 5: wait for "Bắt đầu" button (or game may have auto-started)
-    log("  [5] waiting for Bắt đầu button (max 30s)...")
+    log("  [5] waiting for Bắt đầu button (max 15s)...")
     found_start = False
-    for i in range(15):
+    for i in range(8):
         r = game_frame.evaluate(JS_FIND_BAT_DAU)
         if r.get("found"):
             log(f"    ✓ Bắt đầu found (text: {r.get('text')})")
