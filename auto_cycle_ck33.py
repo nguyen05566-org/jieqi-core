@@ -451,7 +451,12 @@ JS_FIND_PLAYER_COUNT_IN_TABLE = r"""() => {
 def find_game_frame(page, max_wait=60):
     deadline = time.time() + max_wait
     while time.time() < deadline:
-        for f in page.frames:
+        try:
+            frames = page.frames
+        except Exception:
+            # page is closed or detached
+            return None
+        for f in frames:
             try:
                 if f.is_detached():
                     continue
@@ -462,7 +467,25 @@ def find_game_frame(page, max_wait=60):
                     return f
             except Exception:
                 continue
+        # Log diagnostic info every 10s
+        if int(time.time()) % 10 < 2:
+            try:
+                url = page.url
+                title = page.title()
+                log(f"  [find_game_frame] url={url[:80]} title={title[:40]} frames={len(frames)}")
+            except Exception:
+                pass
         time.sleep(2)
+    # Final diagnostic
+    try:
+        url = page.url
+        title = page.title()
+        log(f"  [find_game_frame] FINAL: url={url[:120]} title={title[:60]} frames={len(page.frames)}")
+        # Dump frame URLs
+        for i, f in enumerate(page.frames):
+            log(f"    frame[{i}]: url={f.url[:80]}")
+    except Exception as e:
+        log(f"  [find_game_frame] diagnostic failed: {e}")
     return None
 
 
@@ -1312,7 +1335,7 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
     page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
     page.wait_for_timeout(5000)
     page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(20000)
+    page.wait_for_timeout(30000)
     game_frame = find_game_frame(page, max_wait=60)
     if game_frame:
         # Wait for game state to be fully loaded
@@ -1409,7 +1432,7 @@ def main():
         page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(5000)
         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(20000)
+        page.wait_for_timeout(30000)
 
         game_frame = find_game_frame(page, max_wait=60)
         if not game_frame:
@@ -1490,7 +1513,7 @@ def main():
                         page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
                         page.wait_for_timeout(5000)
                         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
-                        page.wait_for_timeout(20000)
+                        page.wait_for_timeout(30000)
                         game_frame = find_game_frame(page, max_wait=60)
                         if game_frame:
                             log("  ✓ browser relaunched, game frame ready")
