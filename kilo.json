@@ -1,5 +1,13 @@
 {
   "$schema": "https://app.kilo.ai/config.json",
+  "compaction": {
+    "auto": true,
+    "threshold_percent": 90,
+    "prune": true,
+    "tail_turns": 10,
+    "preserve_recent_tokens": 8000,
+    "reserved": 20000
+  },
   "provider": {
     "google": {
       "options": {
