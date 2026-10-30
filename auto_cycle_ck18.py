@@ -30,7 +30,7 @@ Usage:
       --bet-max 100000
 
   Or via env vars:
-  SINGLE_COOKIE_FILE=ck.txt TARGET_NAME=nguyen123456 TARGET_ID=68952059 \\
+  SINGLE_COOKIE_FILE=ck.txt TARGET_NAME=nguyen123456 TARGET_ID=65677929 \\
   CYCLES=3 python3 auto_cycle.py
 """
 import argparse
