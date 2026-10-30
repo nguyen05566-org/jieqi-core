@@ -16,7 +16,7 @@ on:
       - "ck*.txt"
 
 permissions:
-  contents: read
+  contents: write # to commit the masked result report back to this branch
 
 jobs:
   test-cookies:
@@ -32,6 +32,19 @@ jobs:
 
       - name: Test all cookies (masked output only)
         run: python3 tools/test_cookies.py
+
+      - name: Commit results back to this branch (masked, no cookie values)
+        if: always()
+        run: |
+          ls -la cookie_test_results.json cookie_test_results.md
+          mkdir -p cookie-test-results
+          cp cookie_test_results.json cookie-test-results/latest.json
+          cp cookie_test_results.md cookie-test-results/latest.md
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add cookie-test-results/latest.json cookie-test-results/latest.md
+          git commit -m "Cookie test results [skip ci]" || { echo "no result changes"; exit 0; }
+          git push origin "HEAD:${{ github.ref_name }}"
 
       - name: Upload results (no cookie values, masked ids only)
         if: always()
