@@ -980,9 +980,9 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     if not found_start:
         log("    [!] Bắt đầu not found — trying SURRENDER anyway")
 
-    # Step 6: send SURRENDER - wait ~2s then retry up to 3x then exit for claim
-    log("  [*] Gửi SURRENDER nhanh (max 3 lần) rồi thoát để claim lại...")
-    time.sleep(2)
+    # Step 6: send SURRENDER - wait ~3s after joining, send up to 3x then exit for claim
+    log("  [*] Đợi ~3s sau khi vào bàn, gửi SURRENDER nhanh rồi thoát để claim lại...")
+    time.sleep(3)
     for s in range(3):
         try:
             r = game_frame.evaluate(JS_SEND_SURRENDER)
@@ -993,6 +993,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
         except Exception as e:
             log(f"    [surrender {s+1}] err: {e}")
         time.sleep(2)
+    time.sleep(1)
     try:
         if page and not page.is_closed():
             page.close()
