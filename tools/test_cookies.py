@@ -128,6 +128,12 @@ def classify(page, context, c_user):
             pass
     login_text = ("đăng nhập" in body.lower() or "log in" in body.lower()) and has_login_form
 
+    # Server clearing both auth cookies after navigation = session
+    # rejected/expired (seen consistently for dead sessions in both the
+    # urllib probe and Chromium; live sessions keep c_user and match USER_ID).
+    auth_cleared = bool(c_user) and "c_user" not in cmap and not xs_present
+    if auth_cleared:
+        return "DEAD", "server cleared c_user+xs session cookies" + diag, final
     if user_id_match or viewer_match:
         return "ALIVE", "page HTML USER_ID matches c_user", final
     if "/login" in low or "login.php" in low:
