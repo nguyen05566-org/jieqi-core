@@ -951,7 +951,9 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     if not found_start:
         log("    [!] Bắt đầu not found — trying SURRENDER anyway")
 
-    # Step 6: send SURRENDER
+    # Step 6: send SURRENDER - wait 30s after joining table
+    log("  [*] Đợi 30 giây sau khi vào bàn trước khi gửi SURRENDER...")
+    time.sleep(30)
     log("  [6] sending SURRENDER...")
     r = game_frame.evaluate(JS_SEND_SURRENDER)
     log(f"    result: {r}")
@@ -1095,7 +1097,9 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             break
         time.sleep(2)
     
-    # Send SURRENDER
+    # Send SURRENDER - wait 30s after joining table
+    log("  [*] Đợi 30 giây sau khi vào bàn trước khi gửi SURRENDER...")
+    time.sleep(30)
     log("  [6] sending SURRENDER...")
     r = game_frame.evaluate(JS_SEND_SURRENDER)
     log(f"    result: {r}")
