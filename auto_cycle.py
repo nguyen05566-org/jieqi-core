@@ -980,6 +980,36 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     if not found_start:
         log("    [!] Bắt đầu not found — trying SURRENDER anyway")
 
+    # Step 6: send SURRENDER - wait ~2s then retry up to 3x then exit for claim
+    log("  [*] Gửi SURRENDER nhanh (max 3 lần) rồi thoát để claim lại...")
+    time.sleep(2)
+    for s in range(3):
+        try:
+            r = game_frame.evaluate(JS_SEND_SURRENDER)
+            log(f"    [surrender {s+1}] result: {r}")
+            err_msg = str(r.get("err_msg", "")).lower()
+            if "ván chơi đã kết thúc" in err_msg or "van choi da ket thuc" in err_msg:
+                break
+        except Exception as e:
+            log(f"    [surrender {s+1}] err: {e}")
+        time.sleep(2)
+    try:
+        if page and not page.is_closed():
+            page.close()
+    except Exception:
+        pass
+    try:
+        if context:
+            context.close()
+    except Exception:
+        pass
+    try:
+        if browser:
+            browser.close()
+    except Exception:
+        pass
+    raise BrowserCrashed("surrender done - restart for claim")
+
     # Step 6: send SURRENDER - wait ~3s then retry until balance changes
     log("  [*] Chờ ~3s sau khi vào bàn, gửi SURRENDER và theo dõi số dư để xác nhận thành công...")
     time.sleep(3)
