@@ -487,10 +487,18 @@ def find_game_frame(page, max_wait=60):
         # Dump frame URLs
         for i, f in enumerate(page.frames):
             log(f"    frame[{i}]: url={f.url[:80]}")
+        # Check for login page
+        content = page.content()
+        if "login" in content.lower() or "sign in" in content.lower() or "log in" in content.lower():
+            log("  [find_game_frame] ⚠ PAGE APPEARS TO BE A LOGIN PAGE - cookies may be expired!")
+        if "error" in content.lower() or "blocked" in content.lower():
+            log("  [find_game_frame] ⚠ PAGE MAY BE BLOCKED OR ERROR")
+        # Dump first 500 chars of body text
+        body_text = page.evaluate("() => document.body ? document.body.innerText.slice(0, 500) : ''")
+        log(f"  [find_game_frame] body text: {body_text[:300]}")
     except Exception as e:
         log(f"  [find_game_frame] diagnostic failed: {e}")
     return None
-
 
 def ensure_in_lobby(game_frame, page, max_attempts=6):
     """Make sure we're back at Lobby (not in a table)."""
@@ -1577,6 +1585,13 @@ def main():
         page.wait_for_timeout(5000)
         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(30000)
+        try:
+            log(f"[setup] page url: {page.url[:100]}")
+            log(f"[setup] page title: {page.title()[:60]}")
+            body = page.evaluate("() => document.body ? document.body.innerText.slice(0, 300) : ''")
+            log(f"[setup] body text: {body[:200]}")
+        except Exception as e:
+            log(f"[setup] diagnostic failed: {e}")
 
         game_frame = find_game_frame(page, max_wait=60)
         if not game_frame:
