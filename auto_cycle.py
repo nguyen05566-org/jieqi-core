@@ -360,7 +360,7 @@ JS_SEND_SURRENDER = """() => new Promise((resolve) => {
             } catch(e) {}
             resolve(out);
         });
-        setTimeout(() => { if (!done) { done = true; resolve({ok: false, error: 'timeout 12s'}); } }, 12000);
+        setTimeout(() => { if (!done) { done = true; resolve({ok: false, error: 'timeout 60s'}); } }, 60000);
     } catch(e) { resolve({ok: false, error: e.toString()}); }
 })"""
 
@@ -454,7 +454,12 @@ JS_FIND_PLAYER_COUNT_IN_TABLE = r"""() => {
 def find_game_frame(page, max_wait=60):
     deadline = time.time() + max_wait
     while time.time() < deadline:
-        for f in page.frames:
+        try:
+            frames = page.frames
+        except Exception:
+            # page is closed or detached
+            return None
+        for f in frames:
             try:
                 if f.is_detached():
                     continue
@@ -467,25 +472,6 @@ def find_game_frame(page, max_wait=60):
                 continue
         time.sleep(2)
     return None
-
-
-def get_balance(game_frame):
-    try:
-        s = game_frame.evaluate(JS_GET_STATE)
-        return parse_bet(s.get("balance")), s
-    except Exception as e:
-        log(f"  [warn] get_balance failed: {type(e).__name__}")
-        return 0, {"path": None}
-
-
-def is_browser_alive(page):
-    """Check if the browser/page is still alive."""
-    try:
-        if page and page.is_closed():
-            return False
-        return True
-    except Exception:
-        return False
 
 
 def ensure_in_lobby(game_frame, page, max_attempts=6):
@@ -678,23 +664,42 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
 
 def open_table_browser(game_frame, page, filter_name="Tất cả"):
     """Click 'Chọn bàn' → filter (Tất cả / Còn trống).
-    Only operates in Gomoku lobby (Loby.caro.0); if not in Gomoku lobby, returns False.
+    Only operates in Gomoku lobby (Lobby.caro.0); if not in Gomoku lobby, returns False.
+    Returns True if table browser opened successfully, False otherwise.
     """
-    s = game_frame.evaluate(JS_GET_STATE)
-    current_path = s.get("path")
+    try:
+        s = game_frame.evaluate(JS_GET_STATE)
+        current_path = s.get("path")
+    except Exception as e:
+        log(f"  [open_table_browser] state check failed: {e}")
+        return False
     fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
     if current_path not in fb_lobby_paths:
         log(f"  [open_table_browser] NOT in Gomoku lobby (path={current_path}) — refusing to search here")
         return False
-    game_frame.evaluate(JS_CLOSE_POPUPS)
-    time.sleep(0.5)
-    game_frame.evaluate(JS_CLICK_CHON_BAN)
-    time.sleep(5)
-    if filter_name == "Tất cả":
-        game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
-    elif filter_name == "Còn trống":
-        game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
-    time.sleep(2)
+    try:
+        game_frame.evaluate(JS_CLOSE_POPUPS)
+        time.sleep(0.5)
+        # Click "Chọn bàn" to open table browser
+        game_frame.evaluate(JS_CLICK_CHON_BAN)
+        time.sleep(3)
+        # Apply filter
+        if filter_name == "Tất cả":
+            game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
+        elif filter_name == "Còn trống":
+            game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
+        time.sleep(1)
+        # Verify table browser opened by checking for table elements
+        tables = game_frame.evaluate("() => document.querySelectorAll('div[id^=table_]').length")
+        if tables and tables > 0:
+            log(f"  [open_table_browser] ✓ table browser open, {tables} tables visible")
+            return True
+        else:
+            log(f"  [open_table_browser] ⚠ no tables visible — browser may not have opened")
+            return False
+    except Exception as e:
+        log(f"  [open_table_browser] error: {e}")
+        return False
 
 
 def find_target_table(game_frame, target_name, bet_max):
@@ -841,7 +846,9 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
     deadline = time.time() + max_wait_seconds
     attempt = 0
     # Open browser first with "Tất cả" filter
-    open_table_browser(game_frame, page, filter_name="Tất cả")
+    if not open_table_browser(game_frame, page, filter_name="Tất cả"):
+        log("  [wait_for_target] couldn't open table browser — aborting search")
+        return None
 
     while time.time() < deadline:
         attempt += 1
@@ -879,7 +886,8 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
                 if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
                     log(f"  [wait] retry: could not return to {DEFAULT_GOMOKU_LOBBY} — aborting search")
                     return None
-            open_table_browser(game_frame, page, filter_name="Tất cả")
+            if not open_table_browser(game_frame, page, filter_name="Tất cả"):
+                log("  [wait] retry: couldn't re-open table browser")
         except Exception as e:
             log(f"  [wait] re-open lobby err: {e}")
     return None
@@ -927,9 +935,7 @@ def surrender_one_round(game_frame, page, context, browser, target_name, target_
     if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
         log("    [!] couldn't reach Gomoku lobby — trying ensure_in_lobby instead")
         ensure_in_lobby(game_frame, page)
-    open_table_browser(game_frame, page, filter_name="Tất cả")
-
-    # Step 1+2: poll for target's table with retry (waits up to target_wait_seconds)
+    open_table_browser(game_frame, page, filter_name="Tất cả")    # Step 1+2: poll for target's table with retry (waits up to target_wait_seconds)
     log(f"  [1+2] looking for target (id={target_id}, name={target_name!r}) up to {target_wait_seconds}s...")
     target = wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max,
                                          max_wait_seconds=target_wait_seconds,
@@ -947,7 +953,21 @@ def surrender_one_round(game_frame, page, context, browser, target_name, target_
 
     # Step 3: click on target table
     log(f"  [3] clicking table {target['id']}...")
-    game_frame.evaluate(JS_CLICK_TABLE, target["id"])
+    try:
+        click_result = game_frame.evaluate(JS_CLICK_TABLE, target["id"])
+        if not click_result or not click_result.get("clicked"):
+            log(f"    [!] table click failed — table may have disappeared. Retrying...")
+            # Try once more, in case the table was refreshed
+            time.sleep(1)
+            click_result = game_frame.evaluate(JS_CLICK_TABLE, target["id"])
+            if not click_result or not click_result.get("clicked"):
+                log("    [!] table click failed again — aborting round")
+                return False, 0
+            else:
+                log("    ✓ table click succeeded on retry")
+    except Exception as e:
+        log(f"    [!] table click error: {e}")
+        return False, 0
     time.sleep(5)
 
     # Step 4: click "Vào chơi"
@@ -1007,20 +1027,53 @@ def surrender_one_round(game_frame, page, context, browser, target_name, target_
     if not in_match:
         log("    [!] not in match yet — will try SURRENDER anyway")
 
-    # Step 6: send SURRENDER immediately (2x quickly) then exit for claim
-    log("  [*] gửi SURRENDER ngay (2 lần) rồi thoát để claim lại...")
-    for s in range(2):
+    # Step 6: send SURRENDER - check for errors and verify balance change
+    log("  [*] gửi SURRENDER và xác minh thành công (theo dõi số dư thay đổi)...")
+    surrender_confirmed = False
+    surrender_failed = False
+    for s in range(5):
         try:
             r = game_frame.evaluate(JS_SEND_SURRENDER)
             log(f"    [surrender {s+1}] result: {r}")
             err_msg = str(r.get("err_msg", "")).lower()
+            # Check for fatal errors - game already ended or not a player
             if "ván chơi đã kết thúc" in err_msg or "van choi da ket thuc" in err_msg:
+                log("    [!] ván chơi đã kết thúc - không cần SURRENDER nữa")
+                surrender_failed = True
                 break
+            if "không tham gia" in err_msg or "chưa tham gia" in err_msg:
+                log("    [!] chưa là người chơi - chờ và thử lại...")
+                time.sleep(1)
+                continue
+            # Check if surrender was accepted (ok=True or err_code=22)
+            if r.get("ok", False) or r.get("err_code") == 22:
+                # Verify balance change to confirm success
+                time.sleep(2)
+                try:
+                    bal_now, _ = get_balance(game_frame)
+                    if bal_now < bal_before:
+                        lost = bal_before - bal_now
+                        log(f"    ✓ SURRENDER thành công - số dư thay đổi -{lost:,} xu")
+                        surrender_confirmed = True
+                        break
+                except Exception:
+                    pass
         except Exception as e:
             log(f"    [surrender {s+1}] err: {e}")
         time.sleep(1)
+    
+    if not surrender_confirmed and not surrender_failed:
+        # Last-ditch: check balance once more
+        try:
+            bal_final, _ = get_balance(game_frame)
+            if bal_final < bal_before:
+                log(f"    ✓ SURRENDER succeeded - balance changed (last check)")
+                surrender_confirmed = True
+        except Exception:
+            pass
+
+    # Close page/context/browser for restart
     time.sleep(1)
-    # Close page/context/browser properly before restart for claim
     try:
         if page and not page.is_closed():
             page.close()
@@ -1277,7 +1330,7 @@ def get_balance(game_frame):
         raise  # re-raise other exceptions
 
 def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
-               total_xu_to_target, cookies, fp, ctx):
+                total_xu_to_target, cookies, fp, ctx):
     """Execute one claim → surrender cycle. Called from main() with error handling."""
     # Check min balance
     try:
@@ -1355,14 +1408,14 @@ def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
                                            max_tables_to_scan=args.max_tables_to_scan)
             target_label = f"target '{args.target_name}' (id={args.target_id})"
 
-        total_xu_to_target += lost
+        total_xu_to_target[0] += lost
         cycle_results.append({
             "cycle": cycle_num,
             "balance_after_claim": final_bal,
             "surrender_ok": ok,
             "xu_lost": lost,
         })
-        log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target:,}")
+        log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target[0]:,}")
 
         # Re-find game frame for status reporting
         new_gf = find_game_frame(page, max_wait=10)
@@ -1484,7 +1537,7 @@ def main():
     log(f"         bet_max={args.bet_max:,}, cycles={args.cycles}, mode={args.mode}")
 
     cycle_results = []
-    total_xu_to_target = 0
+    total_xu_to_target = [0]  # mutable container for cross-function updates
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
         ctx = browser.new_context(
@@ -1543,12 +1596,42 @@ def main():
 
             # Proactive browser restart between cycles to prevent crash accumulation
             if cycle_num > 1:
-                browser, ctx, page, game_frame = restart_browser(
-                    page, browser, p, cookies, fp, ctx, headless=args.headless
-                )
-                if not game_frame:
-                    log("[!] failed to restart browser — stopping")
-                    break
+                try:
+                    browser, ctx, page, game_frame = restart_browser(
+                        page, browser, p, cookies, fp, ctx, headless=args.headless
+                    )
+                    if not game_frame:
+                        log("[!] failed to restart browser — stopping")
+                        break
+                except Exception as e:
+                    log(f"[!] restart_browser failed: {e} — attempting relaunch...")
+                    try:
+                        browser.close()
+                    except: pass
+                    try:
+                        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
+                        ctx = browser.new_context(
+                            viewport=fp["viewport"], locale=fp["locale"],
+                            user_agent=fp["user_agent"], timezone_id=fp["timezone"],
+                            color_scheme=fp.get("color_scheme", "light"),
+                        )
+                        ctx.add_init_script(al.build_stealth_js(fp))
+                        ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
+                        page = ctx.new_page()
+                        page.set_default_timeout(45000)
+                        page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
+                        page.wait_for_timeout(5000)
+                        page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
+                        page.wait_for_timeout(20000)
+                        game_frame = find_game_frame(page, max_wait=60)
+                        if game_frame:
+                            log("  ✓ browser relaunched, game frame ready")
+                        else:
+                            log("  ✗ failed to find game frame after relaunch")
+                            break
+                    except Exception as e2:
+                        log(f"  ✗ relaunch failed: {e2}")
+                        break
 
             # Catch browser crashes / page closed errors
             result = None
@@ -1559,6 +1642,34 @@ def main():
                     game_frame = result  # Update with refreshed game frame
             except StopCycle:
                 log(f"  [STOP] cycle stopped early")
+                continue
+            except SurrenderDone as e:
+                log(f"  [Surrender completed] restarting browser for next claim cycle: {e}")
+                # Browser already closed in surrender function, relaunch for next cycle
+                try:
+                    browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
+                    ctx = browser.new_context(
+                        viewport=fp["viewport"], locale=fp["locale"],
+                        user_agent=fp["user_agent"], timezone_id=fp["timezone"],
+                        color_scheme=fp.get("color_scheme", "light"),
+                    )
+                    ctx.add_init_script(al.build_stealth_js(fp))
+                    ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
+                    page = ctx.new_page()
+                    page.set_default_timeout(45000)
+                    page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
+                    page.wait_for_timeout(5000)
+                    page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(20000)
+                    game_frame = find_game_frame(page, max_wait=60)
+                    if game_frame:
+                        log("  ✓ browser relaunched after surrender, ready for next cycle")
+                    else:
+                        log("  [!] failed to relaunch browser after surrender")
+                        break
+                except Exception as e2:
+                    log(f"  [!] relaunch after surrender failed: {e2}")
+                    break
                 continue
             except Exception as e:
                 err_type = type(e).__name__
@@ -1621,7 +1732,7 @@ def main():
     if args.mode == "create_own_table":
         log(f"Total cycles completed: {len(cycle_results)}/{args.cycles}")
     else:
-        log(f"Total xu sent to '{args.target_name}': {total_xu_to_target:,} xu")
+        log(f"Total xu sent to '{args.target_name}': {total_xu_to_target[0]:,} xu")
         log(f"Total cycles completed: {len(cycle_results)}/{args.cycles}")
     return 0 if cycle_results else 1
 
