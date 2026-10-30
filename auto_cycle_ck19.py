@@ -23,7 +23,7 @@ Usage:
   python3 auto_cycle.py \\
       --cookie ck.txt \\
       --target-name "nguyen123456" \\
-      --target-id 68952059 \\
+      --target-id 65677929 \\
       --cycles 3 \\
       --claim-min 50000 \\
       --claim-max 55000 \\
@@ -1284,7 +1284,7 @@ def main():
                         help="Cookie file (default: ck.txt)")
     parser.add_argument("--target-name", default="nguyen123456",
                         help="Player name to find in tables (optional — if target_id is set, name is ignored)")
-    parser.add_argument("--target-id", type=int, default=68952059,
+    parser.add_argument("--target-id", type=int, default=65677929,
                         help="Player ID to find (preferred — unique, no name collision). Default: 0 (search by name)")
     parser.add_argument("--max-tables-to-scan", type=int, default=int(os.environ.get("MAX_TABLES_TO_SCAN", "30")),
                         help="Max tables to scan when searching by ID (default: 30 — each table click takes ~1.5s)")
