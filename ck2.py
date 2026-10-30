@@ -1276,8 +1276,6 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True, save_path
         save_context_cookies(ctx, save_path)
     page = ctx.new_page()
     page.set_default_timeout(45000)
-    page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
-    page.wait_for_timeout(5000)
     page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(30000)
     game_frame = find_game_frame(page, max_wait=60)
@@ -1370,8 +1368,6 @@ def main():
         page.set_default_timeout(45000)
 
         log(f"\n[setup] goto FB home → {GAME_URL}")
-        page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
-        page.wait_for_timeout(5000)
         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(30000)
 
@@ -1457,8 +1453,6 @@ def main():
                             save_context_cookies(ctx, args.save_cookies.strip())
                         page = ctx.new_page()
                         page.set_default_timeout(45000)
-                        page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=45000)
-                        page.wait_for_timeout(5000)
                         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
                         page.wait_for_timeout(30000)
                         game_frame = find_game_frame(page, max_wait=60)
