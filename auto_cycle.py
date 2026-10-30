@@ -1179,12 +1179,34 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             bal_before = bal_surr_check
             break
         err_msg = str(r.get("err_msg", "")).lower()
+        if "ván chơi đã kết thúc" in err_msg or "van choi da ket thuc" in err_msg:
+            log("    [!] ván chơi đã kết thúc - cố gắng rời bàn ngay...")
+            for _ in range(15):
+                try:
+                    game_frame.evaluate(JS_CLICK_OK)
+                except Exception:
+                    pass
+                try:
+                    game_frame.evaluate(JS_GO_LOBBY)
+                except Exception:
+                    pass
+                time.sleep(1)
+            surrender_ok = False
+            break
         if "không tham gia" in err_msg or "chưa tham gia" in err_msg:
-            log("    [!] chưa là người chơi - chờ 3s rồi thử lại...")
-            time.sleep(3)
+            log("    [!] chưa là người chơi - chờ 2s rồi thử lại...")
+            try:
+                game_frame.evaluate(JS_CLICK_OK)
+            except Exception:
+                pass
+            try:
+                game_frame.evaluate(JS_GO_LOBBY)
+            except Exception:
+                pass
+            time.sleep(2)
             continue
         if r.get("ok") or r.get("err_code") == 22:
-            time.sleep(3)
+            time.sleep(2)
             continue
         time.sleep(2)
     if not surrender_ok:
