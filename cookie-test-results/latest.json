@@ -13,7 +13,7 @@
     "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "logged-out login form served"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED,RECOVER cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=581]"
   },
   {
     "file": "ck1.txt",
@@ -29,7 +29,7 @@
     "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "logged-out login form served"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED,RECOVER cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=581]"
   },
   {
     "file": "ck3.txt",
@@ -42,10 +42,10 @@
   {
     "file": "ck4.txt",
     "c_user": "***6240",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=608]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=565]"
   },
   {
     "file": "ck5.txt",
@@ -90,18 +90,18 @@
   {
     "file": "ck10.txt",
     "c_user": "***6895",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=656]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=613]"
   },
   {
     "file": "ck11.txt",
     "c_user": "***4614",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=588]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=545]"
   },
   {
     "file": "ck12.txt",
@@ -130,81 +130,81 @@
   {
     "file": "ck15.txt",
     "c_user": "***8320",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=586]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=543]"
   },
   {
     "file": "ck20.txt",
     "c_user": "***1232",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,sb,wd xs_present=False body_len=586]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,sb,wd xs_present=False body_len=543]"
   },
   {
     "file": "ck21.txt",
     "c_user": "***6009",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,dpr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=670]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,dpr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=627]"
   },
   {
     "file": "ck30.txt",
     "c_user": "***6974",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=590]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=547]"
   },
   {
     "file": "ck31.txt",
     "c_user": "***1487",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=590]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=547]"
   },
   {
     "file": "ck32.txt",
     "c_user": "***9249",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,locale,ps_l,ps_n,sb,wd xs_present=False body_len=610]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,locale,ps_l,ps_n,sb,wd xs_present=False body_len=567]"
   },
   {
     "file": "ck33.txt",
     "c_user": "***9590",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=586]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=543]"
   },
   {
     "file": "ck34.txt",
     "c_user": "***6638",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=610]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=567]"
   },
   {
     "file": "ck35.txt",
     "c_user": "***1268",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,sb,wd xs_present=False body_len=586]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,sb,wd xs_present=False body_len=543]"
   },
   {
     "file": "ck36.txt",
     "c_user": "***7996",
-    "status": "ERROR",
+    "status": "DEAD",
     "http": 200,
     "final": "https://www.facebook.com/",
-    "evidence": "/me probe: inconclusive: login_form=False cookie_kept=False id_match=False [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=588]"
+    "evidence": "server cleared c_user+xs session cookies [title='Facebook' kw=SECURITY_CHECK,SUSPENDED cookies_after=datr,fr,ps_l,ps_n,sb,wd xs_present=False body_len=545]"
   }
 ]
