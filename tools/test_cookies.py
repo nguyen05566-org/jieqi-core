@@ -56,6 +56,18 @@ def parse_cookie_string(raw):
     return pairs, cookies
 
 
+KEYWORDS = {
+    "LOCKED": ("account has been locked", "tài khoản của bạn đã bị khóa", "temporarily locked", "bị khóa tạm thời"),
+    "CONFIRM_IDENTITY": ("confirm your identity", "xác minh danh tính", "help us confirm", "xác nhận danh tính"),
+    "SECURITY_CHECK": ("checkpoint", "security check", "kiểm tra bảo mật", "we need to verify", "cần xác minh"),
+    "DISABLED": ("account disabled", "bị vô hiệu hóa", "we disabled your account"),
+    "SUSPENDED": ("suspended", "đình chỉ", "appeal"),
+    "SESSION_EXPIRED": ("session expired", "phiên đã hết hạn", "session has expired"),
+    "TWO_FACTOR": ("two-factor", "two factor", "mã xác thực", "enter the code", "authentication app"),
+    "RECOVER": ("find your account", "quên mật khẩu", "forgot password"),
+}
+
+
 def classify(page, context, c_user):
     """Inspect current page/context. Returns (status, evidence, final_url)."""
     final = page.url
@@ -69,14 +81,29 @@ def classify(page, context, c_user):
     except Exception:
         body = ""
     low_html = html.lower()
+    # --- diagnostics (names/flags only, never values) ---
+    try:
+        title = page.title()
+    except Exception:
+        title = ""
+    kw = [k for k, words in KEYWORDS.items() if any(w in low_html for w in words)]
+    try:
+        all_cookies = context.cookies()
+        cookie_names = sorted({c["name"] for c in all_cookies})
+        cmap = {c["name"]: c["value"] for c in all_cookies}
+        xs_present = "xs" in cmap
+    except Exception:
+        cookie_names, xs_present = [], False
+    diag = (f" [title={title!r} kw={','.join(kw) or '-'} "
+            f"cookies_after={','.join(cookie_names) or '-'} xs_present={xs_present} body_len={len(body)}]")
 
     if "/checkpoint" in low:
-        return "CHECKPOINT", "redirect to checkpoint", final
+        return "CHECKPOINT", "redirect to checkpoint" + diag, final
     if any(x in low for x in ("/recover/", "/two_factor", "/confirmemail",
                               "/login/identify", "checkpoint")):
         return "CHECKPOINT", f"redirect: {final.split('?')[0]}", final
     if "temporarily blocked" in low_html or "bị chặn tạm thời" in low_html:
-        return "BLOCKED", "temporarily blocked page", final
+        return "BLOCKED", "temporarily blocked page" + diag, final
 
     m = re.search(r'"USER_ID":"(\d+)"', html) or re.search(r'"ACCOUNT_ID":"(\d+)"', html)
     user_id_match = bool(m and c_user and m.group(1) == c_user)
@@ -112,7 +139,7 @@ def classify(page, context, c_user):
     if cookie_kept and not has_login_form:
         return "ALIVE", "session cookie kept, no login form/redirect", final
     return "ERROR", (f"inconclusive: login_form={has_login_form} "
-                     f"cookie_kept={cookie_kept} id_match={user_id_match}"), final
+                     f"cookie_kept={cookie_kept} id_match={user_id_match}" + diag), final
 
 
 def probe(browser, cookies, c_user):
