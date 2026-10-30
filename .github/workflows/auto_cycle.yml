@@ -94,7 +94,7 @@ jobs:
           pip install playwright
           playwright install chromium --with-deps
 
-       - name: Verify cookie file is present
+      - name: Verify cookie file is present
         run: |
           if [ ! -f ck1.txt ]; then
             echo "::error::Cookie file ck1.txt not found in repo. Commit it (the repo is private)."
@@ -111,7 +111,7 @@ jobs:
           head -c 30 ck1.txt
           echo "...(redacted)"
 
-       - name: Verify setup
+      - name: Verify setup
         run: |
           echo "=== Diagnostic ==="
           echo "Python: $(python3 --version)"
@@ -122,7 +122,7 @@ jobs:
           echo "Working directory: $(pwd)"
           echo "=================="
 
-       - name: Run auto_cycle.py
+      - name: Run auto_cycle.py
         env:
           SINGLE_COOKIE_FILE: 'ck1.txt'
           # TARGET_NAME and TARGET_ID are hardcoded in code (repo is private)
