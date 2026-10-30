@@ -1095,13 +1095,40 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             break
         time.sleep(2)
     
-    # Send SURRENDER
-    log("  [6] sending SURRENDER...")
-    r = game_frame.evaluate(JS_SEND_SURRENDER)
-    log(f"    result: {r}")
-    surrender_ok = r.get("ok", False) or r.get("err_code") == 22
-    
-    # Close dialogs
+        # Send SURRENDER - wait ~3s then retry until balance changes
+    log("  [*] Chờ ~3s, gửi SURRENDER lặp lại đến khi số dư thay đổi (xác nhận thành công)...")
+    time.sleep(3)
+    bal_surr_check = bal_before
+    surrender_ok = False
+    for sv in range(30):
+        try:
+            r = game_frame.evaluate(JS_SEND_SURRENDER)
+            log(f"    [surrender {sv+1}] result: {r}")
+        except Exception as e:
+            log(f"    [surrender {sv+1}] err: {e}")
+            r = {}
+        time.sleep(2)
+        try:
+            bal_now, _ = get_balance(game_frame)
+        except Exception:
+            bal_now = bal_surr_check
+        if bal_now < bal_surr_check:
+            log(f"    ✓ SURRENDER thành công - số dư thay đổi {bal_now - bal_surr_check:,}")
+            surrender_ok = True
+            bal_before = bal_surr_check
+            break
+        err_msg = str(r.get("err_msg", "")).lower()
+        if "không tham gia" in err_msg or "chưa tham gia" in err_msg:
+            log("    [!] chưa là người chơi - chờ 3s rồi thử lại...")
+            time.sleep(3)
+            continue
+        if r.get("ok") or r.get("err_code") == 22:
+            time.sleep(3)
+            continue
+        time.sleep(2)
+    if not surrender_ok:
+        log("    [!] chưa thấy thay đổi số dư, vẫn tiếp tục xử lý")
+# Close dialogs
     log("  [7] closing dialog + returning to lobby...")
     time.sleep(3)
     for _ in range(5):
