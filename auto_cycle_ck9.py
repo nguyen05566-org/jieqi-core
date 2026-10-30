@@ -935,9 +935,9 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
         log("    [!] Vào chơi not found — table may be full or rejected")
         return False, 0
 
-    # Step 4.5: wait 10s after clicking Vào chơi for match to start
-    log("  [4.5] waiting 10s for match to start...")
-    time.sleep(10)
+    # Step 4.5: wait 15s after clicking Vào chơi for match to start
+    log("  [4.5] waiting 15s for match to start...")
+    time.sleep(15)
 
     # Step 5: detect if we're already in a match; if not, wait briefly for "Bắt đầu"
     log("  [5] checking match state...")
