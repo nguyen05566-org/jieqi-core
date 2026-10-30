@@ -111,6 +111,17 @@ jobs:
           head -c 30 ck31.txt
           echo "...(redacted)"
 
+      - name: Verify setup
+        run: |
+          echo "=== Diagnostic ==="
+          echo "Python: $(python3 --version)"
+          echo "Playwright: $(python3 -c 'import playwright; print(playwright.__version__)' 2>&1 || echo 'NOT INSTALLED')"
+          echo "Chromium: $(python3 -c 'from playwright._impl._driver import compute_driver_executable; print("ok")' 2>&1 || echo 'NOT INSTALLED')"
+          echo "Files in repo:"
+          ls -la *.py *.txt 2>/dev/null || echo "none"
+          echo "Working directory: $(pwd)"
+          echo "=================="
+
       - name: Run auto_cycle_ck31.py
         env:
           SINGLE_COOKIE_FILE: 'ck31.txt'
@@ -130,7 +141,6 @@ jobs:
           WAIT_FOR_OPPONENT: ${{ inputs.wait_for_opponent || 'true' }}
           OPPONENT_WAIT_SECONDS: ${{ inputs.opponent_wait_seconds || '120' }}
         run: |
-          set +e
           echo "=== Configuration ==="
           echo "Cookie file: $SINGLE_COOKIE_FILE (read from repo, not secret)"
           echo "Target: hardcoded in code (nguyen123456, id=72682865)"
@@ -145,10 +155,31 @@ jobs:
           echo "Opponent wait seconds: $OPPONENT_WAIT_SECONDS"
           echo ""
           echo "=== Starting auto_cycle_ck31.py at $(date '+%H:%M:%S') ==="
-          python3 auto_cycle_ck31.py
-          EXIT=$?
-          echo "=== Bot exited code=$EXIT at $(date '+%H:%M:%S') ==="
-          exit 0  # always success so log step below runs
+
+          # Run with auto-restart loop (will restart on crash, exit after 5h)
+          START_TIME=$SECONDS
+          MAX_RUNTIME=18000
+          while true; do
+            ELAPSED=$((SECONDS - START_TIME))
+            if [ $ELAPSED -gt $MAX_RUNTIME ]; then
+              echo "=== Max runtime ($MAX_RUNTIME s) reached, exiting ==="
+              break
+            fi
+            echo "=== [$(date '+%H:%M:%S')] Starting auto_cycle_ck31.py (elapsed: ${ELAPSED}s) ==="
+            python3 auto_cycle_ck31.py
+            EXIT_CODE=$?
+            echo "=== auto_cycle_ck31.py exited code=$EXIT_CODE at $(date '+%H:%M:%S') ==="
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "Bot exited successfully"
+              break
+            elif [ $EXIT_CODE -eq 2 ]; then
+              echo "Browser crashed (exit 2) — restarting in 10s"
+              sleep 10
+            else
+              echo "Unknown exit code — restarting in 10s"
+              sleep 10
+            fi
+          done
 
       - name: Show full log
         if: always()
