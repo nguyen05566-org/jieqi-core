@@ -456,6 +456,15 @@ def find_game_frame(page, max_wait=60):
         except Exception:
             # page is closed or detached
             return None
+        # Early login page check - fail fast if cookies are expired
+        try:
+            body_text = page.evaluate("() => document.body ? document.body.innerText.slice(0, 200) : ''")
+            if "Đăng nhập" in body_text or "Log in" in body_text or "Sign in" in body_text or "Log In" in body_text:
+                log("  [find_game_frame] ⚠ LOGIN PAGE DETECTED - cookies are expired or invalid!")
+                log("  [find_game_frame] Please update the cookie file with fresh cookies.")
+                return None  # Fail fast instead of waiting 60s
+        except Exception:
+            pass
         for f in frames:
             try:
                 if f.is_detached():
@@ -1441,6 +1450,15 @@ def main():
         page.wait_for_timeout(5000)
         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(30000)
+        try:
+            body = page.evaluate("() => document.body ? document.body.innerText.slice(0, 200) : ''")
+            if "Đăng nhập" in body or "Log in" in body or "Sign in" in body:
+                log("[ERR] LOGIN PAGE DETECTED - cookies are expired or invalid!")
+                log("[ERR] Please update the cookie file with fresh cookies.")
+                browser.close()
+                return 1
+        except Exception:
+            pass
         try:
             log(f"[setup] page url: {page.url[:100]}")
             log(f"[setup] page title: {page.title()[:60]}")
