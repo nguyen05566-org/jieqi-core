@@ -840,51 +840,28 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
     log(f"  [wait] at Gomoku lobby: {current_path}")
 
     search_mode = "ID" if use_id else "name"
-    log(f"  [wait] polling for target (mode={search_mode}, target_id={target_id}, name={target_name!r}) up to {max_wait_seconds}s...")
-    deadline = time.time() + max_wait_seconds
-    attempt = 0
-    # Open browser first with "Tất cả" filter
+    log(f"  [wait] searching for target (mode={search_mode}, target_id={target_id}, name={target_name!r})...")
+
+    # Open browser with "Tất cả" filter and search once
     open_table_browser(game_frame, page, filter_name="Tất cả")
+    if use_id:
+        target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan, target_name=target_name)
+    else:
+        target = find_target_table(game_frame, target_name, bet_max)
+    if target:
+        return target
 
-    while time.time() < deadline:
-        attempt += 1
-        if use_id:
-            target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
-        else:
-            target = find_target_table(game_frame, target_name, bet_max)
-        if target:
-            return target
+    # Switch to "Còn trống" filter and search once
+    game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
+    if use_id:
+        target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan, target_name=target_name)
+    else:
+        target = find_target_table(game_frame, target_name, bet_max)
+    if target:
+        return target
 
-        # Switch to "Còn trống" filter as alternative
-        game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
-        time.sleep(2)
-        if use_id:
-            target = find_target_by_id(game_frame, int(target_id), bet_max, max_tables_to_scan=max_tables_to_scan)
-        else:
-            target = find_target_table(game_frame, target_name, bet_max)
-        if target:
-            return target
-
-        # Switch back to "Tất cả"
-        game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
-        # Wait + try again (every 10s)
-        wait = min(10, max(2, deadline - time.time()))
-        log(f"  [wait] attempt #{attempt} (mode={search_mode}): target not found — retry in {wait:.0f}s...")
-        time.sleep(wait)
-        # Re-open table browser (in case lobby state changed)
-        try:
-            s = game_frame.evaluate(JS_GET_STATE)
-            current_path = s.get("path")
-            fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-            if current_path not in fb_lobby_paths:
-                log(f"  [wait] retry: not in Gomoku lobby (path={current_path}) — attempting to return")
-                ensure_in_lobby(game_frame, page)
-                if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
-                    log(f"  [wait] retry: could not return to {DEFAULT_GOMOKU_LOBBY} — aborting search")
-                    return None
-            open_table_browser(game_frame, page, filter_name="Tất cả")
-        except Exception as e:
-            log(f"  [wait] re-open lobby err: {e}")
+    # Switch back to "Tất cả"
+    game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
     return None
 
 
@@ -938,7 +915,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
                                          max_wait_seconds=target_wait_seconds,
                                          max_tables_to_scan=max_tables_to_scan)
     if not target:
-        log(f"    [!] target not found within {target_wait_seconds}s — skipping surrender")
+        log(f"    [!] target not found — skipping surrender")
         log(f"    [hint] make sure target has created a table with bet <= {bet_max} xu")
         return False, 0
 
