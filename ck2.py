@@ -48,6 +48,7 @@ import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import anti_lock as al
+import cookie_utils
 
 from playwright.sync_api import sync_playwright
 
@@ -106,17 +107,8 @@ JS_WS_ENSURE = """() => {
 }"""
 
 
-def parse_cookie_string(raw):
-    out = []
-    for part in raw.split(";"):
-        part = part.strip()
-        if not part or "=" not in part:
-            continue
-        n, v = part.split("=", 1)
-        out.append({"name": n.strip(), "value": v.strip(),
-                    "domain": ".facebook.com", "path": "/",
-                    "secure": True, "httpOnly": False, "sameSite": "Lax"})
-    return out
+parse_cookie_string = cookie_utils.parse_cookie_string
+extend_cookie_expiry = cookie_utils.extend_cookie_expiry
 
 
 def parse_bet(s):
