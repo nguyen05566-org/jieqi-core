@@ -64,10 +64,6 @@ on:
         required: false
         default: '120'
         type: string
-  schedule:
-    # Chạy mỗi 6h (UTC): 00:00, 06:00, 12:00, 18:00
-    # = 07:00, 13:00, 19:00, 01:00 giờ Việt Nam (UTC+7)
-    - cron: '0 0,6,12,18 * * *'
 
 permissions:
   actions: write   # cho phép gh CLI trigger lại workflow (auto-restart)
