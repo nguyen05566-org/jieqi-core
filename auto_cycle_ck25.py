@@ -831,7 +831,7 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
 
     Only searches in Loby.caro.0 lobby — will not search if we're in a different lobby.
     """
-    use_id = target_id and int(target_id) > 0
+    use_id = False  # search by target name only (id search disabled)
     use_name = bool(target_name and target_name.strip())
 
     if not use_id and not use_name:
@@ -1374,9 +1374,9 @@ def main():
     parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck25.txt"),
                         help="Cookie file (default: ck.txt)")
     parser.add_argument("--target-name", default="nguyen123456",
-                        help="Player name to find in tables (optional — if target_id is set, name is ignored)")
-    parser.add_argument("--target-id", type=int, default=72682865,
-                        help="Player ID to find (preferred — unique, no name collision). Default: 0 (search by name)")
+                        help="Player name to find in tables (target name to find in tables)")
+    parser.add_argument("--target-id", type=int, default=0,
+                        help="Player ID (disabled — search uses target name). Default: 0")
     parser.add_argument("--max-tables-to-scan", type=int, default=int(os.environ.get("MAX_TABLES_TO_SCAN", "30")),
                         help="Max tables to scan when searching by ID (default: 30 — each table click takes ~1.5s)")
     parser.add_argument("--cycles", type=int, default=int(os.environ.get("CYCLES", "3")),
