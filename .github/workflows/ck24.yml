@@ -143,7 +143,7 @@ jobs:
         run: |
           echo "=== Configuration ==="
           echo "Cookie file: $SINGLE_COOKIE_FILE (read from repo, not secret)"
-          echo "Target: hardcoded in code (nguyen123456, id=68952059)"
+          echo "Target: hardcoded in code (nguyen123456, id=72682865)"
           echo "Cycles: $CYCLES"
           echo "Claim range: [$CLAIM_MIN, $CLAIM_MAX]"
           echo "Bet max: $BET_MAX"
