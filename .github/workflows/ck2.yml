@@ -118,7 +118,7 @@ jobs:
           echo "Working directory: $(pwd)"
           echo "=================="
 
-      - name: Run ck2.py
+      - name: Run auto_cycle_ck2.py
         env:
           SINGLE_COOKIE_FILE: 'ck2.txt'
           CYCLES: ${{ inputs.cycles || '100' }}
@@ -150,7 +150,7 @@ jobs:
           echo "Wait for opponent: $WAIT_FOR_OPPONENT"
           echo "Opponent wait seconds: $OPPONENT_WAIT_SECONDS"
           echo ""
-          echo "=== Starting ck2.py at $(date '+%H:%M:%S') ==="
+          echo "=== Starting auto_cycle_ck2.py at $(date '+%H:%M:%S') ==="
 
           # Run with auto-restart loop (will restart on crash, exit after 5h)
           START_TIME=$SECONDS
@@ -161,10 +161,10 @@ jobs:
               echo "=== Max runtime ($MAX_RUNTIME s) reached, exiting ==="
               break
             fi
-            echo "=== [$(date '+%H:%M:%S')] Starting ck2.py (elapsed: ${ELAPSED}s) ==="
-            python3 ck2.py
+            echo "=== [$(date '+%H:%M:%S')] Starting auto_cycle_ck2.py (elapsed: ${ELAPSED}s) ==="
+            python3 auto_cycle_ck2.py
             EXIT_CODE=$?
-            echo "=== ck2.py exited code=$EXIT_CODE at $(date '+%H:%M:%S') ==="
+            echo "=== auto_cycle_ck2.py exited code=$EXIT_CODE at $(date '+%H:%M:%S') ==="
             if [ $EXIT_CODE -eq 0 ]; then
               echo "Bot exited successfully"
               break
