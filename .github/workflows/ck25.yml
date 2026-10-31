@@ -131,7 +131,7 @@ jobs:
           BET_MAX: '100000'
           HEADLESS: 'true'
           MAX_CLAIMS_PER_CYCLE: '200'
-          CLAIM_COOLDOWN: '1.0'
+          CLAIM_COOLDOWN: '3.0'
           DELAY_BETWEEN_CYCLES: '10'
           TARGET_WAIT_SECONDS: ${{ inputs.target_wait_seconds || '60' }}
           MAX_TABLES_TO_SCAN: '40'

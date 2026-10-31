@@ -636,7 +636,7 @@ def trigger_and_claim(game_frame):
     return result
 
 
-def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200, cooldown=1.0):
+def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200, cooldown=3.0):
     """Claim VIDEO_REWARD repeatedly until balance is in [claim_min, claim_max].
     Returns (final_balance, num_claims_ok, num_claims_fail, server_rejected)."""
     log(f"\n[CLAIM] claiming until balance in [{claim_min:,}, {claim_max:,}] (max {max_claims} claims)...")
@@ -1536,8 +1536,8 @@ def main():
                         help="Stop if balance drops below this (default: 1000)")
     parser.add_argument("--max-claims-per-cycle", type=int, default=int(os.environ.get("MAX_CLAIMS_PER_CYCLE", "200")),
                         help="Max claim attempts per cycle (default: 200)")
-    parser.add_argument("--claim-cooldown", type=float, default=float(os.environ.get("CLAIM_COOLDOWN", "1.0")),
-                        help="Seconds between claims (default: 1.0)")
+    parser.add_argument("--claim-cooldown", type=float, default=float(os.environ.get("CLAIM_COOLDOWN", "3.0")),
+                        help="Seconds between claims (default: 3.0)")
     parser.add_argument("--delay-between-cycles", type=float, default=float(os.environ.get("DELAY_BETWEEN_CYCLES", "10")),
                         help="Seconds between cycles (default: 10)")
     parser.add_argument("--target-wait-seconds", type=int, default=int(os.environ.get("TARGET_WAIT_SECONDS", "60")),
