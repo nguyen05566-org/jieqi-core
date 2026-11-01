@@ -58,6 +58,7 @@ EXIT_SESSION_DEAD = 3
 parse_cookie_string = al.parse_cookie_string
 load_cookies = al.load_cookies
 apply_cookies = al.apply_cookies
+current_context = al.current_context
 detect_login_state = al.detect_login_state
 format_evidence = al.format_evidence
 last_load_summary = al.last_load_summary

@@ -1049,6 +1049,13 @@ def loaded_c_user():
     return _LAST_LOAD.get("c_user")
 
 
+def current_context():
+    """Trả về context đang được theo dõi (None vì đã bỏ bind_context/autosave).
+
+    detect_login_state sẽ fallback sang page.context khi ctx=None."""
+    return None
+
+
 def _c_user_of(cookies):
     for c in cookies or []:
         if c.get("name") == "c_user":
