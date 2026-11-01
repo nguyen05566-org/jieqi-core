@@ -7,6 +7,8 @@ import copy
 import random
 import hashlib
 import contextlib
+import shutil
+import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FP_DIR        = os.environ.get("FP_DIR", os.path.join(_HERE, "fingerprints"))
@@ -871,6 +873,122 @@ def stealth_launch_args(fp: dict = None) -> list:
         except Exception:
             pass
     return args
+
+
+# =====================================================================
+# I) PRIVATE BROWSER CONTEXT — như repo ck: profile tạm, wipe storage
+# =====================================================================
+
+JS_WIPE = r"""
+() => {
+  try { localStorage.clear(); } catch (e) {}
+  try { sessionStorage.clear(); } catch (e) {}
+  try {
+    if (window.caches && caches.keys) {
+      caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))).catch(() => {});
+    }
+  } catch (e) {}
+  try {
+    if (window.indexedDB && indexedDB.databases) {
+      indexedDB.databases().then((dbs) => {
+        (dbs || []).forEach((d) => { if (d.name) indexedDB.deleteDatabase(d.name); });
+      }).catch(() => {});
+    }
+  } catch (e) {}
+  try {
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
+    }
+  } catch (e) {}
+  return true;
+}
+"""
+
+DEFAULT_ORIGINS = (
+    "https://www.facebook.com",
+    "https://facebook.com",
+    "https://www.fbsbx.com",
+    "https://fbsbx.com",
+)
+
+
+def launch_private_context(playwright, headless: bool = True, args: list = None,
+                           context_kwargs: dict = None, launch_kwargs: dict = None):
+    """Mở persistent context trên profile tạm (mỗi session 1 profile, tự xoá sau phiên).
+
+    Trả về (context, profile_dir). profile_dir phải xoá bằng close_private_context.
+    Giống anti_pattern trong repo ck: không dùng lại cache/cookie/lịch sử giữa các phiên.
+    """
+    profile_dir = tempfile.mkdtemp(prefix="botpriv-")
+    kwargs = {
+        "user_data_dir": profile_dir,
+        "headless": headless,
+        "args": args or ["--no-sandbox", "--disable-dev-shm-usage",
+                         "--disable-blink-features=AutomationControlled"],
+    }
+    chrome_path = os.environ.get("BOT_CHROME_PATH", "").strip()
+    if chrome_path:
+        kwargs["executable_path"] = chrome_path
+    if context_kwargs:
+        kwargs.update(context_kwargs)
+    if launch_kwargs:
+        kwargs.update(launch_kwargs)
+    context = playwright.chromium.launch_persistent_context(**kwargs)
+    return context, profile_dir
+
+
+def close_private_context(context, profile_dir: str = None):
+    """Đóng context và xoá profile tạm (xoá cache + lịch sử trên đĩa)."""
+    try:
+        if context:
+            context.close()
+    except Exception:
+        pass
+    if profile_dir:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+
+
+def wipe_storage(context, page=None, origins=DEFAULT_ORIGINS):
+    """Xoá cache, cookie, storage, service worker của origin.
+
+    Gọi TRƯỚC khi nạp cookie đăng nhập và SAU khi kết thúc session.
+    """
+    result = {"cache": False, "cookies": False, "storage": False, "js": False}
+    try:
+        cdp = context.new_cdp_session(page) if page else None
+    except Exception:
+        cdp = None
+    if cdp:
+        for method, key in (("Network.clearBrowserCache", "cache"),
+                            ("Network.clearBrowserCookies", "cookies")):
+            try:
+                cdp.send(method)
+                result[key] = True
+            except Exception:
+                pass
+        for origin in origins:
+            try:
+                cdp.send("Storage.clearDataForOrigin",
+                         {"origin": origin, "storageTypes": "all"})
+                result["storage"] = True
+            except Exception:
+                pass
+        try:
+            cdp.detach()
+        except Exception:
+            pass
+    try:
+        context.clear_cookies()
+        result["cookies"] = True
+    except Exception:
+        pass
+    if page:
+        try:
+            page.evaluate(JS_WIPE)
+            result["js"] = True
+        except Exception:
+            pass
+    return result
 
 
 # =====================================================================

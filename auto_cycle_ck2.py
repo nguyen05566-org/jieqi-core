@@ -1109,7 +1109,7 @@ def surrender_one_round(game_frame, page, context, browser, target_name, target_
         pass
     try:
         if browser:
-            browser.close()
+            al.close_private_context(ctx, profile_dir)
     except Exception:
         pass
     raise SurrenderDone("surrender done - restart for claim")
@@ -1270,7 +1270,7 @@ def create_own_table_and_surrender(game_frame, page, context, browser, bet_amoun
                 pass
             try:
                 if browser:
-                    browser.close()
+                    al.close_private_context(ctx, profile_dir)
             except Exception:
                 pass
             raise SurrenderDone("game ended - restarting to claim")
@@ -1352,7 +1352,7 @@ def get_balance(game_frame):
                 raise BrowserCrashed(f"{err_type}: {e}")
         raise  # re-raise other exceptions
 
-def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
+def _run_cycle(args, game_frame, page, p, cycle_num, cycle_results,
                 total_xu_to_target, cookies, fp, ctx):
     """Execute one claim → surrender cycle. Called from main() with error handling."""
     # Check min balance
@@ -1457,27 +1457,32 @@ def _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results,
         raise
 
 
-def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
-    """Close and relaunch browser + context to prevent crashes.
-    Returns (browser, ctx, page, game_frame)."""
-    log("  [restart] closing browser context to prevent crash accumulation...")
-    try:
-        ctx.close()
-    except: pass
-    try:
-        browser.close()
-    except: pass
-    browser = p.chromium.launch(headless=headless, args=al.stealth_launch_args(fp))
-    ctx = browser.new_context(
-        viewport=fp["viewport"], locale=fp["locale"],
-        user_agent=fp["user_agent"], timezone_id=fp["timezone"],
-        color_scheme=fp.get("color_scheme", "light"),
+def restart_browser(page, ctx, profile_dir, cookies, fp, p, headless=True):
+    """Dong context cu, mo context moi tren profile tam de tranh crash accumulation.
+    Returns (ctx, profile_dir, page, game_frame)."""
+    log("  [restart] dong context cu de tranh crash accumulation...")
+    al.close_private_context(ctx, profile_dir)
+    ctx, profile_dir = al.launch_private_context(
+        p,
+        headless=headless,
+        args=al.stealth_launch_args(fp),
+        context_kwargs={
+            "viewport": fp["viewport"],
+            "locale": fp["locale"],
+            "user_agent": fp["user_agent"],
+            "timezone_id": fp["timezone"],
+            "color_scheme": fp.get("color_scheme", "light"),
+        },
     )
     ctx.add_init_script(al.build_stealth_js(fp))
+    # Wipe storage before loading cookies
+    _wipe_page = ctx.new_page()
+    al.wipe_storage(ctx, _wipe_page)
+    _wipe_page.close()
     apply_cookies(ctx, cookies)
     page = ctx.new_page()
     page.set_default_timeout(45000)
-    log("  [restart] goto game page directly...")
+    log("  [restart] goto game page truc tiep...")
     page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(30000)
     game_frame = find_game_frame(page, max_wait=60)
@@ -1495,7 +1500,7 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
         log("  [restart] ✓ browser restarted, game frame ready")
     else:
         log("  [restart] ✗ no game frame after restart")
-    return browser, ctx, page, game_frame
+    return ctx, profile_dir, page, game_frame
 
 
 def main():
@@ -1568,13 +1573,24 @@ def main():
     cycle_results = []
     total_xu_to_target = [0]  # mutable container for cross-function updates
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
-        ctx = browser.new_context(
-            viewport=fp["viewport"], locale=fp["locale"],
-            user_agent=fp["user_agent"], timezone_id=fp["timezone"],
-            color_scheme=fp.get("color_scheme", "light"),
+        ctx, profile_dir = al.launch_private_context(
+            p,
+            headless=args.headless,
+            args=al.stealth_launch_args(fp),
+            context_kwargs=
+            {
+                "viewport": fp["viewport"],
+                "locale": fp["locale"],
+                "user_agent": fp["user_agent"],
+                "timezone_id": fp["timezone"],
+                "color_scheme": fp.get("color_scheme", "light"),
+            },
         )
         ctx.add_init_script(al.build_stealth_js(fp))
+        # Wipe storage before loading cookies (clean slate, like repo ck)
+        _wipe_page = ctx.new_page()
+        al.wipe_storage(ctx, _wipe_page)
+        _wipe_page.close()
         apply_cookies(ctx, cookies)
         page = ctx.new_page()
         page.set_default_timeout(45000)
@@ -1598,17 +1614,23 @@ def main():
                 else:
                     log("[ERR] Account đang bị checkpoint (xác minh danh tính) → "
                         "xử lý thủ công trên FB trước khi chạy lại.")
-                browser.close()
+                al.close_private_context(ctx, profile_dir)
                 return EXIT_SESSION_DEAD
             if ev["user_switched"]:
                 log(f"[ERR] Cookie file thuộc c_user={al.loaded_c_user()} nhưng phiên "
                     f"đang là c_user={ev['c_user']} → nhầm account, dừng.")
                 set_soft_ban(cookie_path, duration_s=900, escalate=True)
-                browser.close()
+                al.close_private_context(ctx, profile_dir)
                 return EXIT_SESSION_DEAD
             # Đã login: lưu ngay cookie server vừa cấp (datr/sb/xs có thể đã đổi)
             clear_soft_ban(cookie_path)
             record_session_start(cookie_path)
+            # Warm-up: scroll FB feed truoc khi vao game (giong nguoi thuc)
+            try:
+                al.warm_up_account(page, max_s=15)
+                log("  [warm-up] OK")
+            except Exception as e:
+                log(f"  [warm-up] fail (bo qua): {e}")
         except Exception as exc:
             log(f"[login] detect failed (bỏ qua): {exc}")
         try:
@@ -1631,11 +1653,11 @@ def main():
                     if _ev["state"] == "checkpoint":
                         set_soft_ban(cookie_path, duration_s=900, escalate=True)
                     log("[ERR] Session bị thu hồi giữa run → dừng job thay vì retry.")
-                    browser.close()
+                    al.close_private_context(ctx, profile_dir)
                     return EXIT_SESSION_DEAD
             except Exception:
                 pass
-            browser.close()
+            al.close_private_context(ctx, profile_dir)
             return 1
         log(f"[setup] game frame ready")
 
@@ -1661,23 +1683,20 @@ def main():
             log(f"\n[init] FAILED to get balance: {type(e).__name__}: {e}")
             log("[init] browser may have crashed — stopping")
             try:
-                browser.close()
+                al.close_private_context(ctx, profile_dir)
             except: pass
             return 1
 
         for cycle_num in range(1, args.cycles + 1):
             log(f"\n{'#' * 60}")
             log(f"# CYCLE {cycle_num}/{args.cycles}")
-            if _ck.get("saved"):
-                log(f"[cookie] saved {_ck.get('count')} cookies (c_user={_ck.get('c_user')}, "
-                    f"txt_changed={_ck.get('txt_changed')})")
             log(f"{'#' * 60}")
 
             # Proactive browser restart between cycles to prevent crash accumulation
             if cycle_num > 1:
                 try:
-                    browser, ctx, page, game_frame = restart_browser(
-                        page, browser, p, cookies, fp, ctx, headless=args.headless
+                    ctx, profile_dir, page, game_frame = restart_browser(
+                        page, ctx, profile_dir, cookies, fp, p, headless=args.headless
                     )
                     if not game_frame:
                         log("[!] failed to restart browser — stopping")
@@ -1685,16 +1704,27 @@ def main():
                 except Exception as e:
                     log(f"[!] restart_browser failed: {e} — attempting relaunch...")
                     try:
-                        browser.close()
+                        al.close_private_context(ctx, profile_dir)
                     except: pass
                     try:
-                        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
-                        ctx = browser.new_context(
-                            viewport=fp["viewport"], locale=fp["locale"],
-                            user_agent=fp["user_agent"], timezone_id=fp["timezone"],
-                            color_scheme=fp.get("color_scheme", "light"),
+                        ctx, profile_dir = al.launch_private_context(
+                            p,
+                            headless=args.headless,
+                            args=al.stealth_launch_args(fp),
+                            context_kwargs=
+                            {
+                                "viewport": fp["viewport"],
+                                "locale": fp["locale"],
+                                "user_agent": fp["user_agent"],
+                                "timezone_id": fp["timezone"],
+                                "color_scheme": fp.get("color_scheme", "light"),
+                            },
                         )
                         ctx.add_init_script(al.build_stealth_js(fp))
+                        # Wipe storage before loading cookies (clean slate, like repo ck)
+                        _wipe_page = ctx.new_page()
+                        al.wipe_storage(ctx, _wipe_page)
+                        _wipe_page.close()
                         apply_cookies(ctx, cookies)
                         page = ctx.new_page()
                         page.set_default_timeout(45000)
@@ -1713,7 +1743,7 @@ def main():
             # Catch browser crashes / page closed errors
             result = None
             try:
-                result = _run_cycle(args, game_frame, page, browser, p, cycle_num, cycle_results, 
+                result = _run_cycle(args, game_frame, page, p, cycle_num, cycle_results, 
                            total_xu_to_target, cookies, fp, ctx)
                 if result:
                     game_frame = result  # Update with refreshed game frame
@@ -1724,13 +1754,24 @@ def main():
                 log(f"  [Surrender completed] restarting browser for next claim cycle: {e}")
                 # Browser already closed in surrender function, relaunch for next cycle
                 try:
-                    browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
-                    ctx = browser.new_context(
-                        viewport=fp["viewport"], locale=fp["locale"],
-                        user_agent=fp["user_agent"], timezone_id=fp["timezone"],
-                        color_scheme=fp.get("color_scheme", "light"),
+                    ctx, profile_dir = al.launch_private_context(
+                        p,
+                        headless=args.headless,
+                        args=al.stealth_launch_args(fp),
+                        context_kwargs=
+                        {
+                            "viewport": fp["viewport"],
+                            "locale": fp["locale"],
+                            "user_agent": fp["user_agent"],
+                            "timezone_id": fp["timezone"],
+                            "color_scheme": fp.get("color_scheme", "light"),
+                        },
                     )
                     ctx.add_init_script(al.build_stealth_js(fp))
+                    # Wipe storage before loading cookies (clean slate, like repo ck)
+                    _wipe_page = ctx.new_page()
+                    al.wipe_storage(ctx, _wipe_page)
+                    _wipe_page.close()
                     apply_cookies(ctx, cookies)
                     page = ctx.new_page()
                     page.set_default_timeout(45000)
@@ -1752,16 +1793,27 @@ def main():
                 if err_type in ('TargetClosedError', 'BrowserCrashed', 'Browser closed', 'Page closed'):
                     log("  Browser closed — attempting relaunch...")
                     try:
-                        browser.close()
+                        al.close_private_context(ctx, profile_dir)
                     except: pass
                     try:
-                        browser = p.chromium.launch(headless=args.headless, args=al.stealth_launch_args(fp))
-                        ctx = browser.new_context(
-                            viewport=fp["viewport"], locale=fp["locale"],
-                            user_agent=fp["user_agent"], timezone_id=fp["timezone"],
-                            color_scheme=fp.get("color_scheme", "light"),
+                        ctx, profile_dir = al.launch_private_context(
+                            p,
+                            headless=args.headless,
+                            args=al.stealth_launch_args(fp),
+                            context_kwargs=
+                            {
+                                "viewport": fp["viewport"],
+                                "locale": fp["locale"],
+                                "user_agent": fp["user_agent"],
+                                "timezone_id": fp["timezone"],
+                                "color_scheme": fp.get("color_scheme", "light"),
+                            },
                         )
                         ctx.add_init_script(al.build_stealth_js(fp))
+                        # Wipe storage before loading cookies (clean slate, like repo ck)
+                        _wipe_page = ctx.new_page()
+                        al.wipe_storage(ctx, _wipe_page)
+                        _wipe_page.close()
                         apply_cookies(ctx, cookies)
                         page = ctx.new_page()
                         page.set_default_timeout(45000)
@@ -1790,7 +1842,7 @@ def main():
             else:
                 bal_final = 0
         try:
-            browser.close()
+            al.close_private_context(ctx, profile_dir)
         except Exception:
             pass
 
