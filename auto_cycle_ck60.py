@@ -64,7 +64,11 @@ bind_context = cookie_utils.bind_context
 current_context = cookie_utils.current_context
 detect_login_state = cookie_utils.detect_login_state
 format_evidence = cookie_utils.format_evidence
-last_load_summary = cookie_utils.last_load_summary
+# Anti-lock đồng bộ theo từng cookie file (fingerprint + state đã per-bot trong anti_lock).
+check_daily_quota = al.check_daily_quota
+record_session_start = al.record_session_start
+set_soft_ban = al.set_soft_ban
+clear_soft_ban = al.clear_soft_ban
 
 
 def parse_bet(s):
@@ -1407,6 +1411,13 @@ def main():
         log(f"[ERR] cookie file not found: {cookie_path}")
         return 1
 
+    # Anti-lock: nếu nick này đang bị soft-ban (vì checkpoint/rate-limit trước đó)
+    # thì dừng ngay, không mở browser lại spam login wall.
+    _ok, _reason = check_daily_quota(cookie_path)
+    if not _ok:
+        log(f"[anti-lock] BỎ QUA {os.path.basename(cookie_path)}: {_reason}")
+        return EXIT_SESSION_DEAD
+
     cookies = load_cookies(cookie_path)   # merge ck*.txt + jar (không bịa expires)
     log(f"[cookie] {len(cookies)} cookies from {os.path.basename(cookie_path)} "
         f"→ {last_load_summary()}")
@@ -1441,6 +1452,10 @@ def main():
             log(f"[login] evidence={format_evidence(ev)}")
             if ev["state"] in ("logged_out", "checkpoint"):
                 log(f"[ERR] {ev['state'].upper()} — {ev['reason']}")
+                # Đồng bộ trạng thái vào anti_lock (per cookie file) để các run sau
+                # không mở browser spam nick này.
+                if ev["state"] == "checkpoint":
+                    set_soft_ban(cookie_path, duration_s=900, escalate=True)
                 if ev["state"] == "logged_out":
                     log("[ERR] Cookie đã bị server thu hồi hoặc không hợp lệ → "
                         "cần đăng nhập lại thủ công rồi cập nhật ck*.txt.")
@@ -1452,9 +1467,12 @@ def main():
             if ev["user_switched"]:
                 log(f"[ERR] Cookie file thuộc c_user={cookie_utils.loaded_c_user()} nhưng phiên "
                     f"đang là c_user={ev['c_user']} → nhầm account, dừng.")
+                set_soft_ban(cookie_path, duration_s=900, escalate=True)
                 browser.close()
                 return EXIT_SESSION_DEAD
             # Đã login: lưu ngay cookie server vừa cấp (datr/sb/xs có thể đã đổi)
+            clear_soft_ban(cookie_path)
+            record_session_start(cookie_path)
             _res = save_cookies(ctx, cookie_path, force=True)
             log(f"[cookie] after-login save → {_res}")
         except Exception as exc:
@@ -1476,6 +1494,8 @@ def main():
                 if _ev["state"] in ("logged_out", "checkpoint"):
                     log(f"[ERR] {_ev['state'].upper()} — {_ev['reason']}")
                     log(f"[ERR] evidence={format_evidence(_ev)}")
+                    if _ev["state"] == "checkpoint":
+                        set_soft_ban(cookie_path, duration_s=900, escalate=True)
                     log("[ERR] Session bị thu hồi giữa run → dừng job thay vì retry.")
                     browser.close()
                     return EXIT_SESSION_DEAD
