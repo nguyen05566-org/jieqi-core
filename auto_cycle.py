@@ -59,8 +59,6 @@ EXIT_SESSION_DEAD = 3
 parse_cookie_string = cookie_utils.parse_cookie_string
 load_cookies = cookie_utils.load_cookies
 apply_cookies = cookie_utils.apply_cookies
-save_cookies = cookie_utils.save_cookies
-bind_context = cookie_utils.bind_context
 current_context = cookie_utils.current_context
 detect_login_state = cookie_utils.detect_login_state
 format_evidence = cookie_utils.format_evidence
@@ -1465,10 +1463,6 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
     Returns (browser, ctx, page, game_frame)."""
     log("  [restart] closing browser context to prevent crash accumulation...")
     try:
-        save_cookies(ctx, force=True)   # cứu cookie mới nhất trước khi vứt context
-    except Exception:
-        pass
-    try:
         ctx.close()
     except: pass
     try:
@@ -1583,7 +1577,6 @@ def main():
         )
         ctx.add_init_script(al.build_stealth_js(fp))
         apply_cookies(ctx, cookies)
-        bind_context(ctx, cookie_path)   # autosave cookie thật: atexit + SIGTERM + mốc cycle
         page = ctx.new_page()
         page.set_default_timeout(45000)
 
@@ -1618,8 +1611,6 @@ def main():
             # Đã login: lưu ngay cookie server vừa cấp (datr/sb/xs có thể đã đổi)
             clear_soft_ban(cookie_path)
             record_session_start(cookie_path)
-            _res = save_cookies(ctx, cookie_path, force=True)
-            log(f"[cookie] after-login save → {_res}")
         except Exception as exc:
             log(f"[login] detect failed (bỏ qua): {exc}")
         try:
@@ -1679,7 +1670,6 @@ def main():
         for cycle_num in range(1, args.cycles + 1):
             log(f"\n{'#' * 60}")
             log(f"# CYCLE {cycle_num}/{args.cycles}")
-            _ck = save_cookies(ctx)   # throttled theo COOKIE_SAVE_INTERVAL (mặc định 300s)
             if _ck.get("saved"):
                 log(f"[cookie] saved {_ck.get('count')} cookies (c_user={_ck.get('c_user')}, "
                     f"txt_changed={_ck.get('txt_changed')})")
