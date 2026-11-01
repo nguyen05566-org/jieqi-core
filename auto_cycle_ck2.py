@@ -912,7 +912,7 @@ def wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max
     return None
 
 
-def surrender_one_round(game_frame, page, context, browser, target_name, target_id, bet_max, target_wait_seconds=60, max_tables_to_scan=30):
+def surrender_one_round(game_frame, page, target_name, target_id, bet_max, target_wait_seconds=60, max_tables_to_scan=30):
     """Find target table → join → SURRENDER. Returns (success, balance_lost).
     If target_id > 0, search by ID (preferred). Else search by name.
     """
@@ -1095,27 +1095,16 @@ def surrender_one_round(game_frame, page, context, browser, target_name, target_
         except Exception:
             pass
 
-    # Close page/context/browser for restart
     time.sleep(1)
     try:
         if page and not page.is_closed():
             page.close()
     except Exception:
         pass
-    try:
-        if context:
-            context.close()
-    except Exception:
-        pass
-    try:
-        if browser:
-            al.close_private_context(ctx, profile_dir)
-    except Exception:
-        pass
-    raise SurrenderDone("surrender done - restart for claim")
+    raise BrowserCrashed("surrender done - restart for claim")
 
 
-def create_own_table_and_surrender(game_frame, page, context, browser, bet_amount=40000, wait_for_opponent=True, 
+def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_opponent=True, 
                                     opponent_wait_seconds=120, min_balance=1000):
     """Create own table with specified bet, wait for opponent, then SURRENDER.
     
@@ -1263,17 +1252,7 @@ def create_own_table_and_surrender(game_frame, page, context, browser, bet_amoun
                     page.close()
             except Exception:
                 pass
-            try:
-                if context:
-                    context.close()
-            except Exception:
-                pass
-            try:
-                if browser:
-                    al.close_private_context(ctx, profile_dir)
-            except Exception:
-                pass
-            raise SurrenderDone("game ended - restarting to claim")
+            raise BrowserCrashed("game ended - restarting to claim")
         if "không tham gia" in err_msg or "chưa tham gia" in err_msg:
             log("    [!] chưa là người chơi - chờ 2s rồi thử lại...")
             try:
@@ -1418,7 +1397,7 @@ def _run_cycle(args, game_frame, page, p, cycle_num, cycle_results,
                 return
             log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
             ok, lost = create_own_table_and_surrender(
-                game_frame, page, ctx, browser, bet_amount=bet_amount,
+                game_frame, page, bet_amount=bet_amount,
                 wait_for_opponent=args.wait_for_opponent,
                 opponent_wait_seconds=args.opponent_wait_seconds,
                 min_balance=args.min_balance,
@@ -1426,7 +1405,7 @@ def _run_cycle(args, game_frame, page, p, cycle_num, cycle_results,
             target_label = "self-created table"
         else:
             log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
-            ok, lost = surrender_one_round(game_frame, page, ctx, browser, args.target_name, args.target_id, args.bet_max,
+            ok, lost = surrender_one_round(game_frame, page, args.target_name, args.target_id, args.bet_max,
                                            target_wait_seconds=args.target_wait_seconds,
                                            max_tables_to_scan=args.max_tables_to_scan)
             target_label = f"target '{args.target_name}' (id={args.target_id})"

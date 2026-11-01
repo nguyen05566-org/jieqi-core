@@ -1027,16 +1027,6 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
             page.close()
     except Exception:
         pass
-    try:
-        if context:
-            context.close()
-    except Exception:
-        pass
-    try:
-        if browser:
-            al.close_private_context(ctx, profile_dir)
-    except Exception:
-        pass
     raise BrowserCrashed("surrender done - restart for claim")
 
 
