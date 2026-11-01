@@ -62,6 +62,7 @@ current_context = al.current_context
 detect_login_state = al.detect_login_state
 format_evidence = al.format_evidence
 last_load_summary = al.last_load_summary
+loaded_c_user = al.loaded_c_user
 # Anti-lock đồng bộ theo từng cookie file (fingerprint + state đã per-bot trong anti_lock).
 check_daily_quota = al.check_daily_quota
 record_session_start = al.record_session_start
