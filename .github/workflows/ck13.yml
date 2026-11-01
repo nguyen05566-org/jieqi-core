@@ -178,6 +178,11 @@ jobs:
             if [ $EXIT_CODE -eq 0 ]; then
               echo "Bot exited successfully"
               break
+            elif [ $EXIT_CODE -eq 3 ]; then
+              # exit 3 = cookie/session đã bị server thu hồi hoặc account bị checkpoint.
+              echo "::error::Session cookie đã bị thu hồi/checkpoint (exit 3). Dừng job, KHÔNG retry — đăng nhập lại thủ công rồi cập nhật ck*.txt rồi chạy lại."
+              SESSION_DEAD=1
+              break
             elif [ $EXIT_CODE -eq 2 ]; then
               echo "Browser crashed (exit 2) — restarting in 30s"
               sleep 30
@@ -186,6 +191,10 @@ jobs:
               sleep 30
             fi
           done
+
+          if [ "${SESSION_DEAD:-0}" = "1" ]; then
+            exit 1
+          fi
 
       - name: Show full log
         if: always()

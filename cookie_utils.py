@@ -281,6 +281,11 @@ def last_load_summary():
     )
 
 
+def loaded_c_user():
+    """``c_user`` của cookie đã load cho run này (None nếu file không có)."""
+    return _LAST_LOAD.get("c_user")
+
+
 def load_cookies(cookie_path):
     """Đọc cookie để dùng cho run này: merge ``ck*.txt`` + jar.
 
@@ -305,6 +310,7 @@ def load_cookies(cookie_path):
                        "jar_count": 0, "txt_known": False})
 
     if not isinstance(jar, dict) or not isinstance(jar.get("cookies"), list):
+        _LAST_LOAD["c_user"] = _c_user_of(txt_cookies)
         return txt_cookies
 
     jar_cookies = [c for c in jar["cookies"] if isinstance(c, dict) and c.get("name")]
@@ -316,10 +322,12 @@ def load_cookies(cookie_path):
     if txt_known:
         merged = _merge(primary=jar_cookies, secondary=txt_cookies)
         _LAST_LOAD["source"] = "jar"
-        return merged
+    else:
+        merged = _merge(primary=txt_cookies, secondary=jar_cookies)
+        _LAST_LOAD["source"] = "txt"
 
-    merged = _merge(primary=txt_cookies, secondary=jar_cookies)
-    _LAST_LOAD["source"] = "txt"
+    # c_user của nguồn đã chọn — dùng để phát hiện "nhầm account" lúc detect login.
+    _LAST_LOAD["c_user"] = _c_user_of(merged)
     return merged
 
 
@@ -654,6 +662,8 @@ def detect_login_state(page=None, ctx=None, response=None, expected_c_user=None)
     ev["logged_in_hint"] = bool(dom.get("loggedInHint"))
 
     # --- 5. c_user có khớp file cookie không -------------------------------
+    if expected_c_user is None:
+        expected_c_user = _LAST_LOAD.get("c_user")
     user_switched = False
     if expected_c_user and c_user and str(expected_c_user) != c_user:
         user_switched = True

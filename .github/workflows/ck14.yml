@@ -154,6 +154,10 @@ jobs:
           python3 auto_cycle_ck14.py
           EXIT=$?
           echo "=== Bot exited code=$EXIT at $(date '+%H:%M:%S') ==="
+          if [ "$EXIT" -eq 3 ]; then
+            echo "::error::Session cookie đã bị thu hồi/checkpoint (exit 3). Đăng nhập lại thủ công rồi cập nhật cookie file."
+            exit 1
+          fi
           exit 0  # always success so log step below runs
 
       - name: Show full log
