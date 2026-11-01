@@ -50,6 +50,11 @@ from playwright.sync_api import sync_playwright
 
 GAME_URL = "https://www.facebook.com/gaming/play/gomoku-vh"
 
+# Exit code để workflow biết "đừng retry": cookie/session đã bị server thu hồi
+# (login wall) hoặc account bị checkpoint. Retry 10s/lần suốt 5h chỉ làm account
+# khó sống hơn và spam login wall.
+EXIT_SESSION_DEAD = 3
+
 
 parse_cookie_string = cookie_utils.parse_cookie_string
 load_cookies = cookie_utils.load_cookies
@@ -1585,7 +1590,12 @@ def main():
                     log("[ERR] Account đang bị checkpoint (xác minh danh tính) → "
                         "xử lý thủ công trên FB trước khi chạy lại.")
                 browser.close()
-                return 1
+                return EXIT_SESSION_DEAD
+            if ev["user_switched"]:
+                log(f"[ERR] Cookie file thuộc c_user={cookie_utils.loaded_c_user()} nhưng phiên "
+                    f"đang là c_user={ev['c_user']} → nhầm account, dừng.")
+                browser.close()
+                return EXIT_SESSION_DEAD
             # Đã login: lưu ngay cookie server vừa cấp (datr/sb/xs có thể đã đổi)
             _res = save_cookies(ctx, cookie_path, force=True)
             log(f"[cookie] after-login save → {_res}")
@@ -1602,6 +1612,17 @@ def main():
         game_frame = find_game_frame(page, max_wait=60)
         if not game_frame:
             log("[ERR] no game frame after 60s")
+            # Phân biệt "game chậm/iframe lỗi" (retry được) với "session đã chết" (dừng).
+            try:
+                _ev = detect_login_state(page, ctx=ctx)
+                if _ev["state"] in ("logged_out", "checkpoint"):
+                    log(f"[ERR] {_ev['state'].upper()} — {_ev['reason']}")
+                    log(f"[ERR] evidence={format_evidence(_ev)}")
+                    log("[ERR] Session bị thu hồi giữa run → dừng job thay vì retry.")
+                    browser.close()
+                    return EXIT_SESSION_DEAD
+            except Exception:
+                pass
             browser.close()
             return 1
         log(f"[setup] game frame ready")

@@ -67,8 +67,49 @@ khẩu, checkpoint, IP/thiết bị lạ, sống quá lâu không hoạt động
 lại trên trình duyệt và dán chuỗi cookie mới vào `ck<n>.txt` — bot sẽ nhận ra
 (vì digest không khớp history) và dùng đúng bản bạn vừa dán.
 
-## 7. Test
+## 7. Exit code & vòng restart của workflow
+
+| Code | Ý nghĩa | Workflow làm gì |
+|---|---|---|
+| 0 | Chạy xong (có cycle) | kết thúc job, xanh |
+| 1 | Lỗi tạm thời: không có cycle, game frame không lên, browser crash lẻ | retry (10–30s), tới `MAX_RUNTIME` |
+| 2 | Browser crash | retry 30s |
+| **3** | **Session đã bị server thu hồi / checkpoint / cookie file thuộc account khác** | **dừng hẳn job, `::error::` đỏ — KHÔNG retry** |
+
+Trước đây login wall cũng trả 1 ⇒ job retry 10s/lần suốt 5h: hàng trăm lần mở
+login wall, account càng khó sống và log đầy lỗi. Nay `EXIT_SESSION_DEAD = 3`
+được trả ở 3 chỗ: kiểm tra login lúc setup, `find_game_frame` thất bại + xác
+nhận session chết, và khi `c_user` của phiên khác `c_user` trong file (nhầm
+account — trường hợp này còn nguy hiểm hơn crash vì xu có thể đi sai account).
+
+## 8. Dọn dẹp workflow
+
+- Đã xoá **22 workflow trỏ tới `ck*.txt` không tồn tại** (`ck16–19`, `ck22–29`,
+  `ck37–45`, `ck60`): chúng fail ngay ở bước "Verify cookie file" mỗi 6h, chỉ
+  tạo run đỏ. Script `auto_cycle_ckNN.py` tương ứng vẫn còn — chỉ cần thêm
+  `ckNN.txt` rồi copy `ck12.yml` là chạy lại được.
+- Đã xoá **`ck35.yml`, `ck36.yml`**: trùng account với `ck3.txt` / `ck6.txt`
+  (cùng `c_user`) ⇒ hai browser dùng chung một `xs`, Facebook thu hồi ngay.
+  `ck35.txt` / `ck36.txt` vẫn còn trong repo: nếu bản trong đó còn sống, dán
+  sang `ck3.txt` / `ck6.txt` rồi xoá file trùng.
+- `.gitignore`: bỏ ignore `ck2..ck11` — chúng vẫn được workflow dùng, ignore chỉ
+  làm account mới dễ bị bỏ sót khỏi git.
+- Test `tests/test_cookie_utils.py` giờ chặn tái phát: mỗi workflow phải trỏ
+  tới cookie file tồn tại, và không hai workflow nào dùng chung một account.
+
+## 9. Giới hạn của cache
+
+`actions/cache` lưu ở post-step và **chỉ lưu khi job thành công**. Vì vậy:
+- Job fail/cancel ⇒ jar của run đó không vào cache ⇒ token vừa rotate bị mất,
+  run sau quay lại bản cũ. Đây là lý do vẫn nên giữ `MAX_RUNTIME` **ngắn hơn**
+  khoảng cron (5h < 6h) và tránh trigger tay khi job đang chạy
+  (`cancel-in-progress: true`).
+- Xảy ra thường xuyên thì chuyển sang commit `ck*.txt` + `state/cookies/` lại
+  vào repo sau mỗi run (cần `contents: write`), nhưng sẽ làm git history chứa
+  session token và có thể đụng nhau khi nhiều workflow push cùng lúc.
+
+## 10. Test
 
 ```bash
-python3 tests/test_cookie_utils.py    # không cần playwright
+python3 tests/test_cookie_utils.py    # 29 test, không cần playwright
 ```

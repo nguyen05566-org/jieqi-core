@@ -272,5 +272,100 @@ class LoginStateTest(unittest.TestCase):
         self.assertIn(st["state"], ("unknown", "logged_out"))
 
 
+class LoadedAccountTest(unittest.TestCase):
+    """c_user của file được dùng để phát hiện nhầm account (không cần truyền tay)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="cookie-test-")
+        self._old_jar_dir = cu.JAR_DIR
+        cu.JAR_DIR = os.path.join(self.tmp, "cookies")
+        cu._LAST_LOAD.clear()
+        self.txt = os.path.join(self.tmp, "ck1.txt")
+        with open(self.txt, "w", encoding="utf-8") as fh:
+            fh.write(CK_TXT + "\n")
+
+    def tearDown(self):
+        cu.JAR_DIR = self._old_jar_dir
+        cu._LAST_LOAD.clear()
+
+    def test_loaded_c_user_none_before_load(self):
+        cu._LAST_LOAD.clear()
+        self.assertIsNone(cu.loaded_c_user())
+
+    def test_loaded_c_user_from_txt(self):
+        cu.load_cookies(self.txt)
+        self.assertEqual(cu.loaded_c_user(), "61594838440865")
+
+    def test_user_switched_detected_without_explicit_expected(self):
+        cu.load_cookies(self.txt)          # file thuộc c_user 61594838440865
+        page = FakePage()
+        ctx = FakeCtx([{"name": "c_user", "value": "111222333", "domain": ".facebook.com",
+                        "path": "/"},
+                       {"name": "xs", "value": "tok", "domain": ".facebook.com", "path": "/"}])
+        st = cu.detect_login_state(page, ctx=ctx)
+        self.assertTrue(st["user_switched"])
+        self.assertEqual(st["state"], "logged_in")   # phiên hợp lệ nhưng SAI account
+
+
+class RepoConsistencyTest(unittest.TestCase):
+    """Bảo vệ hành vi "session chết thì dừng, không retry" khỏi bị revert lẻ tẻ."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _scripts(self):
+        import glob
+        return sorted(glob.glob(os.path.join(self.ROOT, "auto_cycle*.py")))
+
+    def test_every_script_defines_exit_session_dead(self):
+        for path in self._scripts():
+            text = open(path, encoding="utf-8").read()
+            self.assertIn("EXIT_SESSION_DEAD = 3", text, path)
+            self.assertGreaterEqual(text.count("return EXIT_SESSION_DEAD"), 2, path)
+            self.assertNotIn('body_text or "Log in"', text, path)
+
+    def test_every_cookie_workflow_handles_exit_3(self):
+        import glob
+        import re
+        flows = sorted(glob.glob(os.path.join(self.ROOT, ".github", "workflows", "*.yml")))
+        checked = 0
+        for path in flows:
+            text = open(path, encoding="utf-8").read()
+            if "SINGLE_COOKIE_FILE" not in text:
+                continue
+            checked += 1
+            self.assertRegex(text, r"-eq 3", path)          # có nhánh xử lý exit 3
+            self.assertRegex(text, r"Cookie jar cache", path)
+        self.assertGreater(checked, 10)
+
+    def test_no_workflow_points_to_missing_cookie_file(self):
+        import glob
+        import re
+        for path in sorted(glob.glob(os.path.join(self.ROOT, ".github", "workflows", "*.yml"))):
+            m = re.search(r"SINGLE_COOKIE_FILE: *'([^']+)'", open(path, encoding="utf-8").read())
+            if m:
+                self.assertTrue(os.path.exists(os.path.join(self.ROOT, m.group(1))),
+                                "%s trỏ tới %s không tồn tại" % (path, m.group(1)))
+
+    def test_no_two_active_workflows_share_the_same_account(self):
+        """Hai workflow chạy song song cùng một account FB sẽ tự đá session của nhau."""
+        import glob
+        import re
+        seen = {}
+        for wf in sorted(glob.glob(os.path.join(self.ROOT, ".github", "workflows", "*.yml"))):
+            m = re.search(r"SINGLE_COOKIE_FILE: *'([^']+)'", open(wf, encoding="utf-8").read())
+            if not m:
+                continue
+            cookie_path = os.path.join(self.ROOT, m.group(1))
+            if not os.path.exists(cookie_path):
+                continue
+            d = {c["name"]: c["value"] for c in cu.parse_cookie_string(open(cookie_path).read())}
+            uid = d.get("c_user")
+            if not uid:
+                continue
+            self.assertNotIn(uid, seen, "%s dùng cùng account với %s (%s)"
+                             % (wf, seen.get(uid), uid))
+            seen[uid] = wf
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
