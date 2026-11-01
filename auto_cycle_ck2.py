@@ -44,7 +44,6 @@ import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import anti_lock as al
-import cookie_utils
 
 from playwright.sync_api import sync_playwright
 
@@ -56,12 +55,12 @@ GAME_URL = "https://www.facebook.com/gaming/play/gomoku-vh"
 EXIT_SESSION_DEAD = 3
 
 
-parse_cookie_string = cookie_utils.parse_cookie_string
-load_cookies = cookie_utils.load_cookies
-apply_cookies = cookie_utils.apply_cookies
-current_context = cookie_utils.current_context
-detect_login_state = cookie_utils.detect_login_state
-format_evidence = cookie_utils.format_evidence
+parse_cookie_string = al.parse_cookie_string
+load_cookies = al.load_cookies
+apply_cookies = al.apply_cookies
+current_context = al.current_context
+detect_login_state = al.detect_login_state
+format_evidence = al.format_evidence
 # Anti-lock đồng bộ theo từng cookie file (fingerprint + state đã per-bot trong anti_lock).
 check_daily_quota = al.check_daily_quota
 record_session_start = al.record_session_start
@@ -1600,7 +1599,7 @@ def main():
                 browser.close()
                 return EXIT_SESSION_DEAD
             if ev["user_switched"]:
-                log(f"[ERR] Cookie file thuộc c_user={cookie_utils.loaded_c_user()} nhưng phiên "
+                log(f"[ERR] Cookie file thuộc c_user={al.loaded_c_user()} nhưng phiên "
                     f"đang là c_user={ev['c_user']} → nhầm account, dừng.")
                 set_soft_ban(cookie_path, duration_s=900, escalate=True)
                 browser.close()

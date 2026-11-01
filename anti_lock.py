@@ -934,6 +934,282 @@ def warm_up_account(page, fb_url: str = "https://www.facebook.com/", max_s: int 
 
 
 # =====================================================================
+# I) COOKIE — đọc file ck*.txt as-is (không làm tươi, không lưu, không jar)
+# =====================================================================
+
+def parse_cookie_string(raw, domain=".facebook.com", path="/", secure=True,
+                        http_only=False, same_site="Lax"):
+    """name=value; name2=value2 → list cookie dict cho Playwright.
+
+    Không tự set expires: cookie từ file là session cookie,
+    giống như Facebook cấp c_user/xs.
+    """
+    out, seen = [], set()
+    for part in (raw or "").replace("\r", "").replace("\n", ";").split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name, value = name.strip(), value.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append({
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": path or "/",
+            "secure": bool(secure),
+            "httpOnly": bool(http_only),
+            "sameSite": same_site,
+        })
+    return out
+
+
+def apply_cookies(ctx, cookies):
+    """Add cookie vào context, bỏ qua từng cookie lỗi thay vì chết cả lô."""
+    if ctx is None:
+        return 0
+    prepared = []
+    for c in (cookies or []):
+        if not isinstance(c, dict):
+            continue
+        name = (c.get("name") or "").strip()
+        if not name:
+            continue
+        domain = (c.get("domain") or ".facebook.com").strip() or ".facebook.com"
+        if " " in domain:
+            continue
+        payload = {
+            "name": name,
+            "value": "" if c.get("value") is None else str(c.get("value")),
+            "domain": domain,
+            "path": (c.get("path") or "/") or "/",
+        }
+        secure = c.get("secure")
+        payload["secure"] = bool(secure) if secure is not None else _is_fb_domain(domain)
+        http_only = c.get("httpOnly", c.get("http_only"))
+        if http_only is not None:
+            payload["httpOnly"] = bool(http_only)
+        same_site = c.get("sameSite") or c.get("same_site") or "Lax"
+        ss_lower = str(same_site).lower()
+        if ss_lower in ("strict", "lax", "none"):
+            payload["sameSite"] = {"strict": "Strict", "lax": "Lax", "none": "None"}[ss_lower]
+        expires = c.get("expires", c.get("expires_at"))
+        if expires is not None:
+            try:
+                expires = float(expires)
+            except (TypeError, ValueError):
+                expires = None
+            if expires is not None and expires > 0:
+                payload["expires"] = expires
+        prepared.append(payload)
+    added = 0
+    for i in range(0, len(prepared), 20):
+        batch = prepared[i:i + 20]
+        try:
+            ctx.add_cookies(batch)
+            added += len(batch)
+        except Exception:
+            for c in batch:
+                try:
+                    ctx.add_cookies([c])
+                    added += 1
+                except Exception:
+                    continue
+    return added
+
+
+def load_cookies(cookie_path):
+    """Đọc cookie từ file txt (chỉ đọc, không lưu, không jar).
+
+    Cập nhật _LAST_LOAD để detect_login_state/loaded_c_user dùng được.
+    """
+    raw = ""
+    try:
+        with open(cookie_path, encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        pass
+    cookies = parse_cookie_string(raw)
+    _LAST_LOAD.clear()
+    _LAST_LOAD.update({"source": "txt", "txt_count": len(cookies),
+                       "c_user": _c_user_of(cookies)})
+    return cookies
+
+
+_LAST_LOAD = {"source": "txt", "txt_count": 0, "c_user": None}
+
+
+def last_load_summary():
+    return "txt=%d" % _LAST_LOAD.get("txt_count", 0)
+
+
+def loaded_c_user():
+    return _LAST_LOAD.get("c_user")
+
+
+def _c_user_of(cookies):
+    for c in cookies or []:
+        if c.get("name") == "c_user":
+            return (c.get("value") or "").strip() or None
+    return None
+
+
+JS_LOGIN_FORM = """() => {
+    const visible = (el) => {
+        try {
+            const r = el.getBoundingClientRect();
+            const s = getComputedStyle(el);
+            return r.width > 1 && r.height > 1 && s.visibility !== 'hidden'
+                   && s.display !== 'none' && s.opacity !== '0';
+        } catch (e) { return false; }
+    };
+    const pw = [...document.querySelectorAll('input[type="password"]')].filter(visible);
+    const form = document.querySelector(
+        '#login_form, form[action*="login"], [data-testid="royal_login_form"]');
+    const loggedInHint = !!document.querySelector(
+        '[data-pagelet="LeftNav"], [role="navigation"] a[href*="/friends"], ' +
+        'a[aria-label][href*="/me/"], [data-testid="blue_bar_profile_link"]');
+    return {
+        passwordInputs: pw.length,
+        loginForm: !!form && visible(form),
+        loggedInHint: loggedInHint
+    };
+}"""
+
+
+def _url_verdict(url):
+    low = (url or "").lower()
+    if not low or "facebook.com" not in low:
+        return None
+    if "/checkpoint" in low or "/two_step_verification" in low or "/login/checkpoint" in low:
+        return "checkpoint"
+    if ("/login" in low or low.rstrip("/").endswith("login.php")
+            or "/recover" in low or "/login.php" in low):
+        return "logged_out"
+    return None
+
+
+def detect_login_state(page=None, ctx=None, response=None, expected_c_user=None):
+    """Kết luận trạng thái đăng nhập kèm bằng chứng (không dựa vào chữ trên trang)."""
+    ev = {}
+
+    cookies = []
+    for owner in (ctx, getattr(page, "context", None)):
+        if owner is None:
+            continue
+        try:
+            cookies = owner.cookies() or []
+            break
+        except Exception as exc:
+            ev["cookie_error"] = str(exc)
+
+    names = {c.get("name") for c in cookies if isinstance(c, dict)}
+    has_c_user = "c_user" in names and any(
+        c.get("name") == "c_user" and c.get("value") for c in cookies)
+    has_xs = "xs" in names and any(
+        c.get("name") == "xs" and c.get("value") for c in cookies)
+
+    c_user_val = None
+    for c in cookies:
+        if c.get("name") == "c_user":
+            c_user_val = (c.get("value") or "").strip() or None
+            break
+
+    ev["has_c_user"] = bool(has_c_user)
+    ev["has_xs"] = bool(has_xs)
+    ev["c_user"] = c_user_val
+
+    user_switched = False
+    if expected_c_user and c_user_val and c_user_val != expected_c_user:
+        user_switched = True
+    ev["user_switched"] = bool(user_switched)
+
+    url = None
+    if page is not None:
+        try:
+            url = page.url
+        except Exception:
+            pass
+    if response is not None:
+        try:
+            url = getattr(response, "url", url) or url
+        except Exception:
+            pass
+    ev["url"] = url
+
+    verdict = _url_verdict(url)
+    if verdict:
+        ev["url_verdict"] = verdict
+
+    dom = None
+    if page is not None:
+        try:
+            dom = page.evaluate(JS_LOGIN_FORM)
+        except Exception as exc:
+            ev["dom_error"] = str(exc)
+    ev.update(dom or {})
+
+    http_status = None
+    if response is not None:
+        try:
+            http_status = getattr(response, "status", None)
+        except Exception:
+            pass
+    if http_status:
+        ev["http_status"] = http_status
+
+    now_logged_in = has_c_user and has_xs
+
+    if verdict == "checkpoint":
+        state = "checkpoint"
+        reason = "URL là checkpoint/two-step verification"
+    elif verdict == "logged_out" and not now_logged_in:
+        state = "logged_out"
+        reason = "URL login và không có session c_user/xs"
+    elif http_status in (401, 403) and not now_logged_in:
+        state = "logged_out"
+        reason = "HTTP %d và không có session c_user/xs" % http_status
+    elif dom and dom.get("loginForm") and not now_logged_in:
+        state = "logged_out"
+        reason = "Form mật khẩu đang hiển thị và không có session c_user/xs"
+    elif now_logged_in:
+        state = "logged_in"
+        reason = "Có c_user + xs trong cookie"
+    else:
+        state = "unknown"
+        reason = "Không đủ bằng chứng để kết luận"
+
+    return {
+        "state": state,
+        "reason": reason,
+        "evidence": ev,
+        "c_user": c_user_val,
+        "user_switched": bool(user_switched),
+    }
+
+
+def format_evidence(ev):
+    parts = []
+    if ev.get("url"):
+        parts.append("url=%s" % ev["url"])
+    if ev.get("http_status"):
+        parts.append("http=%s" % ev["http_status"])
+    parts.append("c_user=%s" % ("yes" if ev.get("has_c_user") else "no"))
+    parts.append("xs=%s" % ("yes" if ev.get("has_xs") else "no"))
+    if ev.get("passwordInputs") is not None:
+        parts.append("pw=%s" % ev["passwordInputs"])
+    if ev.get("loginForm") is not None:
+        parts.append("loginForm=%s" % ev["loginForm"])
+    if ev.get("loggedInHint") is not None:
+        parts.append("loggedInHint=%s" % ev["loggedInHint"])
+    if ev.get("reason"):
+        parts.append("reason=%s" % ev["reason"])
+    return "; ".join(parts)
+
+
+# =====================================================================
 # Self-test khi chạy trực tiếp
 # =====================================================================
 if __name__ == "__main__":
