@@ -52,7 +52,14 @@ GAME_URL = "https://www.facebook.com/gaming/play/gomoku-vh"
 
 
 parse_cookie_string = cookie_utils.parse_cookie_string
-extend_cookie_expiry = cookie_utils.extend_cookie_expiry
+load_cookies = cookie_utils.load_cookies
+apply_cookies = cookie_utils.apply_cookies
+save_cookies = cookie_utils.save_cookies
+bind_context = cookie_utils.bind_context
+current_context = cookie_utils.current_context
+detect_login_state = cookie_utils.detect_login_state
+format_evidence = cookie_utils.format_evidence
+last_load_summary = cookie_utils.last_load_summary
 
 
 def parse_bet(s):
@@ -448,13 +455,14 @@ def find_game_frame(page, max_wait=60):
         except Exception:
             # page is closed or detached
             return None
-        # Early login page check - fail fast if cookies are expired
+        # Kiểm tra login theo BẰNG CHỨNG (cookie c_user/xs + URL + DOM + response).
+        # Không còn đoán qua chữ "Đăng nhập" trong innerText.
         try:
-            body_text = page.evaluate("() => document.body ? document.body.innerText.slice(0, 200) : ''")
-            if "Đăng nhập" in body_text or "Log in" in body_text or "Sign in" in body_text or "Log In" in body_text:
-                log("  [find_game_frame] ⚠ LOGIN PAGE DETECTED - cookies are expired or invalid!")
-                log("  [find_game_frame] Please update the cookie file with fresh cookies.")
-                return None  # Fail fast instead of waiting 60s
+            ev = detect_login_state(page, ctx=current_context())
+            if ev["state"] in ("logged_out", "checkpoint"):
+                log(f"  [find_game_frame] ⚠ {ev['state'].upper()} — {ev['reason']}")
+                log(f"  [find_game_frame] evidence={format_evidence(ev)}")
+                return None  # chỉ fail fast khi có bằng chứng cứng
         except Exception:
             pass
         for f in frames:
@@ -485,12 +493,14 @@ def find_game_frame(page, max_wait=60):
         # Dump frame URLs
         for i, f in enumerate(page.frames):
             log(f"    frame[{i}]: url={f.url[:80]}")
-        # Check for login page
-        content = page.content()
-        if "login" in content.lower() or "sign in" in content.lower() or "log in" in content.lower():
-            log("  [find_game_frame] ⚠ PAGE APPEARS TO BE A LOGIN PAGE - cookies may be expired!")
-        if "error" in content.lower() or "blocked" in content.lower():
-            log("  [find_game_frame] ⚠ PAGE MAY BE BLOCKED OR ERROR")
+        # Kết luận login bằng bằng chứng thay vì quét chuỗi "login" trong HTML
+        # (HTML luôn chứa chuỗi đó trong JS bundle → trước đây báo sai liên tục).
+        try:
+            ev = detect_login_state(page, ctx=current_context())
+            log(f"  [find_game_frame] login state={ev['state']} — {ev['reason']}")
+            log(f"  [find_game_frame] login evidence={format_evidence(ev)}")
+        except Exception as exc:
+            log(f"  [find_game_frame] login-state check failed: {exc}")
         # Dump first 500 chars of body text
         body_text = page.evaluate("() => document.body ? document.body.innerText.slice(0, 500) : ''")
         log(f"  [find_game_frame] body text: {body_text[:300]}")
@@ -1303,6 +1313,10 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
     Returns (browser, ctx, page, game_frame)."""
     log("  [restart] closing browser context to prevent crash accumulation...")
     try:
+        save_cookies(ctx, force=True)   # cứu cookie mới nhất trước khi vứt context
+    except Exception:
+        pass
+    try:
         ctx.close()
     except: pass
     try:
@@ -1315,7 +1329,7 @@ def restart_browser(page, browser, p, cookies, fp, ctx, headless=True):
         color_scheme=fp.get("color_scheme", "light"),
     )
     ctx.add_init_script(al.build_stealth_js(fp))
-    ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
+    apply_cookies(ctx, cookies)
     page = ctx.new_page()
     page.set_default_timeout(45000)
     page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
@@ -1388,9 +1402,9 @@ def main():
         log(f"[ERR] cookie file not found: {cookie_path}")
         return 1
 
-    cookie_raw = open(cookie_path, encoding="utf-8").read().strip()
-    cookies = parse_cookie_string(cookie_raw)
-    log(f"[cookie] parsed {len(cookies)} cookies from {os.path.basename(cookie_path)}")
+    cookies = load_cookies(cookie_path)   # merge ck*.txt + jar (không bịa expires)
+    log(f"[cookie] {len(cookies)} cookies from {os.path.basename(cookie_path)} "
+        f"→ {last_load_summary()}")
 
     fp = al.get_or_create_fingerprint(os.path.basename(cookie_path))
     log(f"[fp] UA={fp['user_agent'][:50]}... viewport={fp['viewport']}")
@@ -1408,22 +1422,33 @@ def main():
             color_scheme=fp.get("color_scheme", "light"),
         )
         ctx.add_init_script(al.build_stealth_js(fp))
-        ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
+        apply_cookies(ctx, cookies)
+        bind_context(ctx, cookie_path)   # autosave cookie thật: atexit + SIGTERM + mốc cycle
         page = ctx.new_page()
         page.set_default_timeout(45000)
 
         log(f"\n[setup] goto FB home → {GAME_URL}")
-        page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
+        goto_response = page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(30000)
         try:
-            body = page.evaluate("() => document.body ? document.body.innerText.slice(0, 200) : ''")
-            if "Đăng nhập" in body or "Log in" in body or "Sign in" in body:
-                log("[ERR] LOGIN PAGE DETECTED - cookies are expired or invalid!")
-                log("[ERR] Please update the cookie file with fresh cookies.")
+            ev = detect_login_state(page, ctx=ctx, response=goto_response)
+            log(f"[login] state={ev['state']} c_user={ev['c_user']} — {ev['reason']}")
+            log(f"[login] evidence={format_evidence(ev)}")
+            if ev["state"] in ("logged_out", "checkpoint"):
+                log(f"[ERR] {ev['state'].upper()} — {ev['reason']}")
+                if ev["state"] == "logged_out":
+                    log("[ERR] Cookie đã bị server thu hồi hoặc không hợp lệ → "
+                        "cần đăng nhập lại thủ công rồi cập nhật ck*.txt.")
+                else:
+                    log("[ERR] Account đang bị checkpoint (xác minh danh tính) → "
+                        "xử lý thủ công trên FB trước khi chạy lại.")
                 browser.close()
                 return 1
-        except Exception:
-            pass
+            # Đã login: lưu ngay cookie server vừa cấp (datr/sb/xs có thể đã đổi)
+            _res = save_cookies(ctx, cookie_path, force=True)
+            log(f"[cookie] after-login save → {_res}")
+        except Exception as exc:
+            log(f"[login] detect failed (bỏ qua): {exc}")
         try:
             log(f"[setup] page url: {page.url[:100]}")
             log(f"[setup] page title: {page.title()[:60]}")
@@ -1468,6 +1493,10 @@ def main():
         for cycle_num in range(1, args.cycles + 1):
             log(f"\n{'#' * 60}")
             log(f"# CYCLE {cycle_num}/{args.cycles}")
+            _ck = save_cookies(ctx)   # throttled theo COOKIE_SAVE_INTERVAL (mặc định 300s)
+            if _ck.get("saved"):
+                log(f"[cookie] saved {_ck.get('count')} cookies (c_user={_ck.get('c_user')}, "
+                    f"txt_changed={_ck.get('txt_changed')})")
             log(f"{'#' * 60}")
 
             # Proactive browser restart between cycles to prevent crash accumulation
@@ -1505,7 +1534,7 @@ def main():
                             color_scheme=fp.get("color_scheme", "light"),
                         )
                         ctx.add_init_script(al.build_stealth_js(fp))
-                        ctx.add_cookies([dict(c, domain=".facebook.com") for c in cookies])
+                        apply_cookies(ctx, cookies)
                         page = ctx.new_page()
                         page.set_default_timeout(45000)
                         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)

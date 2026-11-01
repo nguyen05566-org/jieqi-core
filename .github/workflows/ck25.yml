@@ -90,6 +90,16 @@ jobs:
           pip install playwright
           playwright install chromium --with-deps
 
+      - name: Cookie jar cache (giữ session giữa các run)
+        # state/cookies/*.jar.json là cookie THẬT server cấp trong lúc chạy.
+        # Không cache thì runner ephemeral sẽ vứt hết sau mỗi job.
+        uses: actions/cache@v4
+        with:
+          path: state/cookies
+          key: cookie-jar-${{ github.workflow }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            cookie-jar-${{ github.workflow }}-
+
       - name: Verify cookie file is present
         run: |
           if [ ! -f ck25.txt ]; then
