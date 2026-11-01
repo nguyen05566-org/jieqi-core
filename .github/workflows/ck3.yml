@@ -121,7 +121,7 @@ jobs:
         run: |
           echo "=== Diagnostic ==="
           echo "Python: $(python3 --version)"
-          echo "Playwright: $(python3 -c 'import playwright; print(playwright.__version__)' 2>&1 || echo 'NOT INSTALLED')"
+          echo "Playwright: $(pip show playwright 2>/dev/null | grep '^Version:' | awk '{print $2}' || echo 'NOT INSTALLED')"
           echo "Chromium: $(python3 -c 'from playwright._impl._driver import compute_driver_executable; print("ok")' 2>&1 || echo 'NOT INSTALLED')"
           echo "Files in repo:"
           ls -la *.py *.txt 2>/dev/null || echo "none"
