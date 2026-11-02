@@ -524,6 +524,54 @@ else:
 BOT_MATCH_DURATION = '1800'
 BOT_TURN_DURATION = '60'
 EMPTY = -1
+
+# ======================== SESSION STORAGE (JSON) ========================
+SESSION_DIR = Path("state/gamevh_sessions")
+SESSION_FILE = SESSION_DIR / "arena11k_session.json"
+
+
+def save_bot_session(bot) -> bool:
+    """Lưu session gamevh (cookie, token, nickname, place_path) ra JSON để đăng nhập lại nhanh."""
+    try:
+        SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        data = {
+            "cookie": bot.cookie,
+            "token": bot.token,
+            "nickname": bot.nickname,
+            "place_path": bot.place_path,
+            "saved_at": int(time.time()),
+        }
+        SESSION_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        log.info(f"[Session] Đã lưu session gamevh vào {SESSION_FILE}")
+        return True
+    except Exception as e:
+        log.warning(f"[Session] Lưu session thất bại: {e}")
+        return False
+
+
+def load_bot_session(bot) -> bool:
+    """Load session gamevh từ JSON. Trả về True nếu có session hợp lệ."""
+    try:
+        if not SESSION_FILE.exists():
+            return False
+        data = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+        bot.cookie = data.get("cookie", "")
+        bot.token = int(data.get("token", 0) or 0)
+        bot.nickname = data.get("nickname", "")
+        bot.place_path = data.get("place_path", "Lobby.caro.0")
+        saved_at = int(data.get("saved_at", 0))
+        if time.time() - saved_at > 3 * 24 * 3600:
+            log.info("[Session] Session quá 3 ngày, sẽ login lại")
+            return False
+        if not bot.cookie:
+            return False
+        log.info(f"[Session] Đã load session gamevh (nick={bot.nickname}, token={bot.token})")
+        return True
+    except Exception as e:
+        log.warning(f"[Session] Load session thất bại: {e}")
+        return False
+
+
 CIRCLE = 0
 CROSS = 1
 
@@ -1543,7 +1591,15 @@ class CaroBot:
 
             if self.engine: self.engine.stop(); self.engine = None; self.embryo_available = False
 
-            login_ok = await asyncio.get_event_loop().run_in_executor(None, self.http_login)
+            # Thử load session đã lưu trước khi login lại
+            session_loaded = load_bot_session(self)
+            if session_loaded:
+                login_ok = True
+                log.info("[Session] Bỏ qua http_login, dùng session đã lưu")
+            else:
+                login_ok = await asyncio.get_event_loop().run_in_executor(None, self.http_login)
+                if login_ok:
+                    save_bot_session(self)
             if not login_ok:
                 retry_count += 1
                 retry_delay = min(30 * (2 ** (retry_count - 1)), 300)
@@ -1571,6 +1627,8 @@ class CaroBot:
             if not (self.in_table or self.is_playing):
                 self.table_id = None
 
+            # Lưu session sau khi kết thúc vòng chạy để lần sau có thể tái sử dụng
+            save_bot_session(self)
             self.save_stats()
             if self.engine: self.engine.stop(); self.engine = None
 
