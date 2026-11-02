@@ -10,7 +10,7 @@
 ╚══════════════════════════════════════════════════════════════════╝
 """
 import subprocess, sys, os, importlib, urllib.request, json, time, struct
-import re, logging, asyncio, random, threading, shutil, selectors, html as html_lib
+import re, logging, asyncio, random, threading, selectors, html as html_lib
 from typing import List, Tuple, Dict, Optional
 from pathlib import Path
 from urllib.parse import urljoin
@@ -1009,7 +1009,7 @@ class CaroBot:
             if r.remaining() > 0: self.lock_key = r.read_ascii()
             await self.send(self.make_enter(self.place_path))
         else:
-            log.error(f"LOGIN failed")
+            log.error("LOGIN failed")
 
     async def handle_enter(self, r: BinaryReader):
         status = r.i8()
@@ -1264,7 +1264,7 @@ class CaroBot:
 
     async def handle_player_enter(self, r: BinaryReader):
         place_level = r.i8()
-        pid = r.i64(); name = r.read_utf()
+        r.i64(); name = r.read_utf()  # pid bỏ qua (chỉ cần advance buffer)
         if r.remaining() >= 36:
             r.i64(); r.i64(); r.read_ascii(); r.i32(); r.i32(); r.i8(); r.i64(); r.i8()
 

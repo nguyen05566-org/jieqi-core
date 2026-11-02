@@ -77,6 +77,10 @@ _save_ctx = None
 _save_cookie_path = None
 
 
+def log(msg=""):
+    print(msg, flush=True)
+
+
 def _save_cookies_now(force: bool = True):
     """G wrapper gọi save_cookies với ctx/cookie_path toàn cục (dùng cho atexit/signal)."""
     if _save_ctx is not None and _save_cookie_path is not None:
@@ -97,6 +101,7 @@ def _on_signal(signum, frame):
 
 
 # Đăng ký atexit + signal handlers
+# (log phải được định nghĩa trước khối try/except này, vì except có thể gọi log)
 atexit.register(_on_exit)
 try:
     signal.signal(signal.SIGTERM, _on_signal)
@@ -119,10 +124,6 @@ def parse_bet(s):
         return int(float(s))
     except Exception:
         return 0
-
-
-def log(msg=""):
-    print(msg, flush=True)
 
 
 # ---- JS helpers ----
@@ -415,7 +416,7 @@ JS_CLICK_OK = """() => {
         if (r.width <= 0 || r.height <= 0) continue;
         const t = (b.innerText || b.textContent || b.value || '').trim();
         if (!t) continue;
-        if (patterns.some(p => t === p) || /về\s*(sảnh|lobby|phòng)/i.test(t) || /rời|thoát|trở về/i.test(t)) {
+        if (patterns.some(p => t === p) || /về\\s*(sảnh|lobby|phòng)/i.test(t) || /rời|thoát|trở về/i.test(t)) {
             try { b.click(); } catch(e) {}
             return {clicked: true, text: t};
         }
@@ -1519,6 +1520,12 @@ def restart_browser(page, ctx, profile_dir, cookies, fp, p, headless=True):
 
 
 def main():
+    # KHẮC PHỤC BUG: trước đây `_save_ctx = ctx` / `_save_cookie_path = ...`
+    # gán trong main() nhưng không khai báo `global` → Python coi chúng là biến
+    # local của main(), làm global _save_ctx (dùng bởi _save_cookies_now qua
+    # atexit/signal) mãi mãi là None → cookie KHÔNG BAO GIỜ được lưu khi thoát.
+    global _save_ctx, _save_cookie_path
+
     parser = argparse.ArgumentParser(description="Gomoku auto-cycle: claim → surrender → claim → surrender ...")
     parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck.txt"),
                         help="Cookie file (default: ck.txt)")

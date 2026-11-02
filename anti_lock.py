@@ -9,6 +9,17 @@ import hashlib
 import contextlib
 import shutil
 import tempfile
+import logging
+
+# Module logger — dùng cho các hàm ghi log nội bộ (save_cookies, ...).
+# Trước đây save_cookies gọi log.warning/log.info nhưng `log` chưa từng được
+# định nghĩa → NameError làm hỏng toàn bộ cookie-save. Khắc phục ở đây.
+log = logging.getLogger("anti_lock")
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    log.addHandler(_h)
+log.setLevel(logging.INFO)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FP_DIR        = os.environ.get("FP_DIR", os.path.join(_HERE, "fingerprints"))
@@ -1085,6 +1096,16 @@ def parse_cookie_string(raw, domain=".facebook.com", path="/", secure=True,
             "sameSite": same_site,
         })
     return out
+
+
+def _is_fb_domain(domain: str) -> bool:
+    """True nếu domain thuộc facebook.com (để mặc định secure=True khi cookie
+    không khai báo secure). Trước đây apply_cookies gọi _is_fb_domain mà hàm này
+    chưa từng được định nghĩa → NameError khi cookie thiếu trường `secure`."""
+    if not domain:
+        return False
+    d = str(domain).strip().lower().lstrip(".")
+    return d == "facebook.com" or d.endswith(".facebook.com")
 
 
 def apply_cookies(ctx, cookies):
