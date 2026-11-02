@@ -82,6 +82,10 @@ record_claim = al.record_claim
 record_transfer = al.record_transfer
 detect_soft_ban = al.detect_soft_ban
 detect_soft_ban_detail = al.detect_soft_ban_detail
+# Wire up human_delay/jitter_sleep — thay time.sleep cố định bằng sleep
+# có jitter ngẫu nhiên, timing không đều như người thật.
+human_delay = al.human_delay
+jitter_sleep = al.jitter_sleep
 
 # Global để lưu trữ ctx/cookie_path dùng cho atexit/signal handler
 _save_ctx = None
@@ -90,6 +94,15 @@ _save_cookie_path = None
 
 def log(msg=""):
     print(msg, flush=True)
+
+
+def _hs(base, jitter=None):
+    """Human-like sleep: base + jitter ngẫu nhiên (default jitter = 25% base, min 0.3s).
+    Thay cho time.sleep cố định — thêm nhiễu để timing không đều như người thật.
+    CHUẨN mới: code mới nên dùng _hs(N) thay cho time.sleep(N)."""
+    if jitter is None:
+        jitter = max(0.3, base * 0.25)
+    jitter_sleep(base, jitter)
 
 
 def _save_cookies_now(force: bool = True):
@@ -552,7 +565,7 @@ def find_game_frame(page, max_wait=60):
                 log(f"  [find_game_frame] url={url[:80]} title={title[:40]} frames={len(frames)}")
             except Exception:
                 pass
-        time.sleep(2)
+        _hs(2)
     # Final diagnostic
     try:
         url = page.url
@@ -592,14 +605,14 @@ def ensure_in_lobby(game_frame, page, max_attempts=6):
                     game_frame.evaluate(JS_CLICK_OK)
                 except Exception:
                     pass
-                time.sleep(1)
+                _hs(1)
             # try leave functions
             for _ in range(3):
                 try:
                     game_frame.evaluate(JS_GO_LOBBY)
                 except Exception:
                     pass
-                time.sleep(1)
+                _hs(1)
             # try find exit/leave buttons
             try:
                 game_frame.evaluate("""() => {
@@ -612,13 +625,13 @@ def ensure_in_lobby(game_frame, page, max_attempts=6):
                 }""")
             except Exception:
                 pass
-            time.sleep(2)
+            _hs(2)
             new_gf = find_game_frame(page, max_wait=20)
             if new_gf:
                 game_frame = new_gf
         except Exception as e:
             log(f"  [nav] ensure_in_lobby err: {e}")
-            time.sleep(2)
+            _hs(2)
     try:
         s = game_frame.evaluate(JS_GET_STATE)
         path = s.get("path")
@@ -666,7 +679,7 @@ def goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY, max_attem
             if current_path is None or current_path in fb_equivalent_paths or "caro" in str(current_path).lower():
                 log(f"    ✓ treating current path ({current_path}) as lobby")
                 return True
-        time.sleep(5)
+        _hs(5)
         # Re-find game frame
         new_gf = find_game_frame(page, max_wait=15)
         if new_gf:
@@ -686,15 +699,15 @@ def trigger_and_claim(game_frame):
     """Send VIDEO_REWARD claim — matches ck_new.py's trigger_and_claim()."""
     # Create table (triggers "enough coin" alert)
     game_frame.evaluate(JS_CREATE_TABLE)
-    time.sleep(2)
+    _hs(2)
     game_frame.evaluate(JS_SELECT_RADIO_11)
-    time.sleep(0.5)
+    _hs(0.5)
     game_frame.evaluate(JS_CLICK_CREATE)
-    time.sleep(3)
+    _hs(3)
 
     # Click "Watch" button if alert shows
     game_frame.evaluate(JS_CLICK_WATCH)
-    time.sleep(1)
+    _hs(1)
 
     # Send VIDEO_REWARD
     result = game_frame.evaluate(JS_CLAIM, 15000)
@@ -746,9 +759,9 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
         # Close popups + watch button
         game_frame.evaluate(JS_CLOSE_POPUPS)
         game_frame.evaluate(JS_CLICK_WATCH)
-        time.sleep(0.3)
+        _hs(0.3)
         game_frame.evaluate(JS_CLOSE_DIALOGS)
-        time.sleep(0.3)
+        _hs(0.3)
 
         # Check balance
         bal, _ = get_balance(game_frame)
@@ -800,7 +813,7 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
                 break
 
         # Human-like delay between claims
-        time.sleep(cooldown + random.uniform(0.5, 1.5))
+        jitter_sleep(cooldown, 1.0)
 
     bal, _ = get_balance(game_frame)
     log(f"[CLAIM done] {claims_ok} OK / {claims_fail} fail | final balance: {bal:,}")
@@ -824,16 +837,16 @@ def open_table_browser(game_frame, page, filter_name="Tất cả"):
         return False
     try:
         game_frame.evaluate(JS_CLOSE_POPUPS)
-        time.sleep(0.5)
+        _hs(0.5)
         # Click "Chọn bàn" to open table browser
         game_frame.evaluate(JS_CLICK_CHON_BAN)
-        time.sleep(3)
+        _hs(3)
         # Apply filter
         if filter_name == "Tất cả":
             game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
         elif filter_name == "Còn trống":
             game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
-        time.sleep(1)
+        _hs(1)
         # Verify table browser opened by checking for table elements
         tables = game_frame.evaluate("() => document.querySelectorAll('div[id^=table_]').length")
         if tables and tables > 0:
@@ -923,12 +936,12 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30, tar
     for t in tables_to_scan:
         # Close any existing popup
         game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-        time.sleep(0.1)
+        _hs(0.1)
         # Clear tap before click (so new messages are only from this click)
         game_frame.evaluate(JS_CLEAR_TAP)
         # Click this table
         game_frame.evaluate(JS_CLICK_TABLE, t["id"])
-        time.sleep(0.3)  # wait for PLAYER_ENTERED to arrive (reduced from 1.0s)
+        _hs(0.3)  # wait for PLAYER_ENTERED to arrive (reduced from 1.0s)
         # Check tap messages for target_id
         tap = game_frame.evaluate(JS_GET_TAP)
         for msg in tap:
@@ -945,7 +958,7 @@ def find_target_by_id(game_frame, target_id, bet_max, max_tables_to_scan=30, tar
 
     # Close any popup before returning
     game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-    time.sleep(0.1)
+    _hs(0.1)
 
     if not found_table:
         log(f"  [scan-by-id] target_id={target_id} not found in any of the {len(tables_to_scan)} tables scanned")
@@ -1034,7 +1047,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     if new_gf:
         game_frame = new_gf
         game_frame.evaluate(JS_CLOSE_POPUPS)
-        time.sleep(2)
+        _hs(2)
         # Wait for game state to be fully loaded
         for _ in range(10):
             try:
@@ -1043,7 +1056,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
                     break
             except:
                 pass
-            time.sleep(2)
+            _hs(2)
         bal_before, _ = get_balance(game_frame)
         log(f"    balance after refresh: {bal_before:,}")
     else:
@@ -1068,7 +1081,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
 
     # Close any popup before clicking the table again
     game_frame.evaluate(JS_CLOSE_TABLE_POPUP)
-    time.sleep(0.5)
+    _hs(0.5)
 
     # Step 3: click on target table
     log(f"  [3] clicking table {target['id']}...")
@@ -1077,7 +1090,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
         if not click_result or not click_result.get("clicked"):
             log(f"    [!] table click failed — table may have disappeared. Retrying...")
             # Try once more, in case the table was refreshed
-            time.sleep(1)
+            _hs(1)
             click_result = game_frame.evaluate(JS_CLICK_TABLE, target["id"])
             if not click_result or not click_result.get("clicked"):
                 log("    [!] table click failed again — aborting round")
@@ -1087,7 +1100,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     except Exception as e:
         log(f"    [!] table click error: {e}")
         return False, 0
-    time.sleep(5)
+    _hs(5)
 
     # Step 4: click "Vào chơi"
     log("  [4] looking for 'Vào chơi' button...")
@@ -1098,14 +1111,14 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
             log(f"    ✓ clicked Vào chơi")
             clicked_vao_choi = True
             break
-        time.sleep(0.5)
+        _hs(0.5)
     if not clicked_vao_choi:
         log("    [!] Vào chơi not found — table may be full or rejected")
         return False, 0
 
     # Step 4.5: wait 15s after clicking Vào chơi for match to start
     log("  [4.5] waiting 15s for match to start...")
-    time.sleep(15)
+    _hs(15)
 
     # Step 5: detect if we're already in a match; if not, wait briefly for "Bắt đầu"
     log("  [5] checking match state...")
@@ -1131,7 +1144,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
                 log(f"    → clicked Bắt đầu")
                 found_start = True
                 break
-            time.sleep(1)
+            _hs(1)
         if not found_start:
             log("    [!] Bắt đầu not found — will try SURRENDER anyway")
         # Poll for match state (path change) up to 8s
@@ -1146,7 +1159,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
                     break
             except Exception:
                 pass
-            time.sleep(1)
+            _hs(1)
     if not in_match:
         log("    [!] not in match yet — will try SURRENDER anyway")
 
@@ -1166,12 +1179,12 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
                 break
             if "không tham gia" in err_msg or "chưa tham gia" in err_msg:
                 log("    [!] chưa là người chơi - chờ và thử lại...")
-                time.sleep(1)
+                _hs(1)
                 continue
             # Check if surrender was accepted (ok=True or err_code=22)
             if r.get("ok", False) or r.get("err_code") == 22:
                 # Verify balance change to confirm success
-                time.sleep(2)
+                _hs(2)
                 try:
                     bal_now, _ = get_balance(game_frame)
                     if bal_now < bal_before:
@@ -1183,7 +1196,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
                     pass
         except Exception as e:
             log(f"    [surrender {s+1}] err: {e}")
-        time.sleep(1)
+        _hs(1)
     
     if not surrender_confirmed and not surrender_failed:
         # Last-ditch: check balance once more
@@ -1195,7 +1208,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
         except Exception:
             pass
 
-    time.sleep(1)
+    _hs(1)
     try:
         if page and not page.is_closed():
             page.close()
@@ -1243,7 +1256,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         game_frame = new_gf
         # Close any popups after refresh
         game_frame.evaluate(JS_CLOSE_POPUPS)
-        time.sleep(2)
+        _hs(2)
         # Re-fetch balance
         bal_before, _ = get_balance(game_frame)
         log(f"    balance after refresh: {bal_before:,}")
@@ -1260,7 +1273,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     # Step 2: Open create table panel
     log("  [1] opening create table panel...")
     game_frame.evaluate(JS_CREATE_TABLE)
-    time.sleep(2)
+    _hs(2)
     
     # Step 3: Select bet amount
     log(f"  [2] selecting bet: {bet_amount:,} xu")
@@ -1269,12 +1282,12 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
     if not r.get("found"):
         log(f"    [!] bet {bet_amount:,} not found, trying radio_11 fallback")
         game_frame.evaluate(JS_SELECT_RADIO_11)
-    time.sleep(0.5)
+    _hs(0.5)
     
     # Step 4: Create table
     log("  [3] clicking CREATE...")
     game_frame.evaluate(JS_CLICK_CREATE)
-    time.sleep(5)
+    _hs(5)
     
     # Step 5: Wait for opponent (if requested)
     if wait_for_opponent:
@@ -1295,7 +1308,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
                 log(f"    ✓ opponent joined ({count} players)")
                 break
             
-            time.sleep(5)
+            _hs(5)
         else:
             log("    [!] no opponent joined within timeout")
             # Try to start game anyway if auto-start is available
@@ -1308,13 +1321,13 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         if r.get("found"):
             log(f"    ✓ Bắt đầu found (text: {r.get('text')})")
             game_frame.evaluate(JS_CLICK_BAT_DAU)
-            time.sleep(5)
+            _hs(5)
             break
-        time.sleep(2)
+        _hs(2)
     
     # Send SURRENDER - wait ~3s then retry until balance changes
     log("  [*] Chờ ~3s, gửi SURRENDER lặp lại đến khi số dư thay đổi (xác nhận thành công)...")
-    time.sleep(3)
+    _hs(3)
     bal_surr_check = bal_before
     surrender_ok = False
     for s in range(30):
@@ -1324,7 +1337,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
         except Exception as e:
             log(f"    [surrender {s+1}] err: {e}")
             r = {}
-        time.sleep(2)
+        _hs(2)
         try:
             bal_now, _ = get_balance(game_frame)
         except Exception:
@@ -1346,7 +1359,7 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
                     game_frame.evaluate(JS_GO_LOBBY)
                 except Exception:
                     pass
-                time.sleep(1)
+                _hs(1)
             try:
                 if page and not page.is_closed():
                     page.close()
@@ -1363,35 +1376,35 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
                 game_frame.evaluate(JS_GO_LOBBY)
             except Exception:
                 pass
-            time.sleep(2)
+            _hs(2)
             continue
         if r.get("ok") or r.get("err_code") == 22:
-            time.sleep(2)
+            _hs(2)
             continue
-        time.sleep(2)
+        _hs(2)
     if not surrender_ok:
         log("    [!] chưa thấy thay đổi số dư, vẫn tiếp tục xử lý")
     
     # Close dialogs
     log("  [7] closing dialog + returning to lobby...")
-    time.sleep(3)
+    _hs(3)
     for _ in range(10):
         try:
             clicked = game_frame.evaluate(JS_CLICK_OK)
             if clicked.get("clicked"):
-                time.sleep(2)
+                _hs(2)
                 break
         except Exception:
             pass
-        time.sleep(1)
+        _hs(1)
     for _ in range(5):
         try:
             game_frame.evaluate(JS_GO_LOBBY)
         except Exception:
             pass
-        time.sleep(2)
+        _hs(2)
     ensure_in_lobby(game_frame, page)
-    time.sleep(2)
+    _hs(2)
     ensure_in_lobby(game_frame, page)
     
     # Final balance
@@ -1494,7 +1507,7 @@ def _run_cycle(args, game_frame, page, p, cycle_num, cycle_results,
                     "xu_lost": 0,
                 })
                 if cycle_num < args.cycles:
-                    time.sleep(args.delay_between_cycles)
+                    human_delay(args.delay_between_cycles, args.delay_between_cycles + 5)
                 return
             log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
             ok, lost = create_own_table_and_surrender(
@@ -1582,7 +1595,7 @@ def restart_browser(page, ctx, profile_dir, cookies, fp, p, headless=True):
                     break
             except:
                 pass
-            time.sleep(2)
+            _hs(2)
         log("  [restart] ✓ browser restarted, game frame ready")
     else:
         log("  [restart] ✗ no game frame after restart")
@@ -1760,7 +1773,7 @@ def main():
 
         # Close any startup popups
         game_frame.evaluate(JS_CLOSE_POPUPS)
-        time.sleep(2)
+        _hs(2)
 
         # Wait for game state to be fully loaded
         log("[init] waiting for game state...")
@@ -1771,7 +1784,7 @@ def main():
                     break
             except:
                 pass
-            time.sleep(2)
+            _hs(2)
 
         try:
             bal, state = get_balance(game_frame)

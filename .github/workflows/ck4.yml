@@ -80,6 +80,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360  # max 6h trên GitHub-hosted runner
     steps:
+      - name: Stagger start (deterministic per-workflow delay 0-600s)
+        # Tránh 22+ workflow cùng fire cron cùng lúc → 22 browser hit FB đồng thời
+        # → flag bot. Delay tính từ MD5(workflow_name) → deterministic, mỗi workflow
+        # có slot riêng. Job mới thêm sau này tự động có stagger riêng — KHÔNG cần
+        # gán minute thủ công. 600s window đủ cho ~60 workflow (10s avg spacing).
+        run: |
+          WF="${{ github.workflow }}"
+          DELAY=$(printf '%s' "$WF" | md5sum | cut -c1-8)
+          DELAY=$((16#$DELAY % 600))
+          echo "[stagger] workflow=$WF → delay ${DELAY}s (before checkout)"
+          sleep "$DELAY"
+
       - uses: actions/checkout@v4
 
       - name: Setup Python
