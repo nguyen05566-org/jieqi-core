@@ -71,6 +71,17 @@ save_cookies = al.save_cookies
 check_daily_quota = al.check_daily_quota
 record_session_start = al.record_session_start
 set_soft_ban = al.set_soft_ban
+# Wire up các hàm anti_lock trước đây chỉ ĐỊNH NGHĨA nhưng KHÔNG BAO GIỜ gọi:
+# - record_claim / record_transfer: ghi nhận claim/transfer vào daily_state để
+#   check_daily_quota thực sự có ý nghĩa (trước đây claims_today luôn 0 → quota
+#   không bao giờ trigger).
+# - detect_soft_ban / detect_soft_ban_detail: quét body text phát hiện message
+#   'bị hạn chế' / 'checkpoint' / 'too many requests' trên page → set_soft_ban
+#   + back off thay vì retry đều đều.
+record_claim = al.record_claim
+record_transfer = al.record_transfer
+detect_soft_ban = al.detect_soft_ban
+detect_soft_ban_detail = al.detect_soft_ban_detail
 
 # Global để lưu trữ ctx/cookie_path dùng cho atexit/signal handler
 _save_ctx = None
@@ -144,6 +155,15 @@ JS_GET_STATE = """() => ({
     playerId: window.currentPlayerId || null,
     body: document.body ? document.body.innerText.slice(0, 600) : '',
 })"""
+
+# JS_GET_BODY_TEXT — scrape body text (≤1500 chars) từ main page hoặc game frame
+# để detect_soft_ban quét message 'bị hạn chế' / 'checkpoint' / 'too many requests'.
+# FB thường hiện những message này trên main page (facebook.com), KHÔNG phải trong
+# game iframe → cần scrape cả hai chỗ (xem _check_soft_ban dưới).
+JS_GET_BODY_TEXT = """() => {
+    try { return (document.body && document.body.innerText) ? document.body.innerText.slice(0, 1500) : ''; }
+    catch(e) { return ''; }
+}"""
 
 # JS_CLAIM — matches ck_new.py's JS_CLAIM (simple, no v3 patch)
 JS_CLAIM = """(timeoutMs) => new Promise((resolve) => {
@@ -683,7 +703,37 @@ def trigger_and_claim(game_frame):
     return result
 
 
-def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200, cooldown=3.0):
+def _check_soft_ban(page, game_frame, cookie_file=""):
+    """Scrape body text từ main page + game frame, quét detect_soft_ban_detail.
+
+    Trả về True nếu phát hiện soft-ban (đã gọi set_soft_ban + escalate). False nếu
+    sạch. FB hiện message 'bị hạn chế'/'checkpoint'/'too many requests' trên main
+    page (facebook.com) chứ KHÔNG trong game iframe → phải scrape cả hai. detect_soft_ban_detail
+    yêu cầu ≥2 pattern KHÁC NHAU cho text dài (>1500 chars) để tránh false positive
+    trên page HTML."""
+    if not cookie_file:
+        return False
+    parts = []
+    try:
+        parts.append(str(page.evaluate(JS_GET_BODY_TEXT) or ""))
+    except Exception:
+        pass
+    try:
+        parts.append(str(game_frame.evaluate(JS_GET_BODY_TEXT) or ""))
+    except Exception:
+        pass
+    combined = "\n".join(parts)
+    if not combined.strip():
+        return False
+    pat = detect_soft_ban_detail(combined)
+    if pat:
+        log(f"[SOFT-BAN] phát hiện pattern '{pat}' trên page → set_soft_ban 15m + dừng cycle")
+        set_soft_ban(cookie_file, duration_s=900, escalate=True)
+        return True
+    return False
+
+
+def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200, cooldown=3.0, cookie_file=""):
     """Claim VIDEO_REWARD repeatedly until balance is in [claim_min, claim_max].
     Returns (final_balance, num_claims_ok, num_claims_fail, server_rejected)."""
     log(f"\n[CLAIM] claiming until balance in [{claim_min:,}, {claim_max:,}] (max {max_claims} claims)...")
@@ -718,11 +768,24 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
             consec_fail = 0
             bal_after, _ = get_balance(game_frame)
             log(f"  [t={i}] ✓ claim +{amount} | {bal:,} → {bal_after:,}")
+            # Wire up anti_lock: record claim → daily quota + reset soft-ban streak.
+            # Trước đây record_claim không bao giờ gọi → claims_today luôn 0 →
+            # check_daily_quota luôn pass → quota vô tác dụng.
+            if cookie_file:
+                record_claim(cookie_file, amount=amount)
+            # Quét body text phát hiện soft-ban message sau mỗi claim thành công.
+            if _check_soft_ban(page, game_frame, cookie_file):
+                log(f"  [stop] soft-ban detected → break claim loop")
+                break
         else:
             claims_fail += 1
             consec_fail += 1
             err = result.get("error", "?")
             log(f"  [t={i}] ✗ claim FAIL ({err}) | consec={consec_fail}")
+            # Quét soft-ban cả khi claim fail (FB có thể hiện 'too many requests').
+            if _check_soft_ban(page, game_frame, cookie_file):
+                log(f"  [stop] soft-ban detected → break claim loop")
+                break
             # "no response" is the server's signal that claim is blocked (balance too high or quota)
             if err == "no response":
                 server_rejected = True
@@ -1402,6 +1465,7 @@ def _run_cycle(args, game_frame, page, p, cycle_num, cycle_results,
         game_frame, page, args.claim_min, args.claim_max,
         max_claims=args.max_claims_per_cycle,
         cooldown=args.claim_cooldown,
+        cookie_file=args.cookie,
     )
 
     if final_bal < args.claim_min and not server_rej:
@@ -1448,6 +1512,12 @@ def _run_cycle(args, game_frame, page, p, cycle_num, cycle_results,
             target_label = f"target '{args.target_name}' (id={args.target_id})"
 
         total_xu_to_target[0] += lost
+        # Wire up anti_lock: record transfer → daily quota tracking.
+        # Trước đây record_transfer không bao giờ gọi → transfers_today luôn 0.
+        if lost > 0 and args.cookie:
+            record_transfer(args.cookie, amount=lost)
+        # Quét soft-ban sau surrender (FB có thể flag 'unusual activity').
+        _check_soft_ban(page, game_frame, args.cookie)
         cycle_results.append({
             "cycle": cycle_num,
             "balance_after_claim": final_bal,
