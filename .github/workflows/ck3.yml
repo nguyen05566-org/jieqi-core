@@ -64,10 +64,12 @@ on:
         required: false
         default: '120'
         type: string
+  schedule:
+    - cron: '0 0,6,12,18 * * *'
 
 permissions:
   actions: write   # cho phép gh CLI trigger lại workflow (auto-restart)
-  contents: read
+  contents: write  # cho phép bot commit cookie cập nhật về repo
 
 concurrency:
   group: ck3-${{ github.ref }}
@@ -200,6 +202,32 @@ jobs:
         if: always()
         run: |
           echo "=== Job completed at $(date '+%H:%M:%S') ==="
+
+      - name: Commit updated cookies back to repo
+        # Bot ghi cookie mới vào ck3.txt qua save_cookies() (đã sửa bug ở commit trước).
+        # Commit lại về repo để run sau dùng session tươi.
+        # if: always() để commit kể cả khi bot crash — session có thể vẫn còn tốt
+        # trước khi crash. save_cookies đã có guard: từ chối ghi nếu thiếu
+        # c_user/xs → không bao giờ ghi đè session rỗng lên file tốt.
+        if: always()
+        run: |
+          git config user.name "jieqi-bot"
+          git config user.email "actions@github.com"
+          git add ck3.txt
+          if git diff --cached --quiet; then
+            echo "No cookie changes to commit (ck3.txt unchanged)"
+          else
+            git commit -m "Update ck3.txt (auto-saved by bot run ${{ github.run_id }})"
+            # Rebase lên remote mới nhất (tránh non-fast-forward khi nhiều workflow
+            # ck* đẩy cookie cùng lúc). Mỗi workflow chỉ sửa file ck3.txt riêng
+            # của nó nên không bao giờ conflict.
+            if git pull --rebase origin main; then
+              git push || echo "::warning::Push failed — cookie sẽ được lưu lại ở run sau"
+            else
+              echo "::warning::Rebase failed — hủy commit cookie lần này"
+              git rebase --abort 2>/dev/null || true
+            fi
+          fi
 
       - name: Upload debug artifacts (state + fingerprints)
         if: always()
