@@ -41,6 +41,8 @@ import time
 import random
 import json
 import subprocess
+import atexit
+import signal
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import anti_lock as al
@@ -63,10 +65,44 @@ detect_login_state = al.detect_login_state
 format_evidence = al.format_evidence
 last_load_summary = al.last_load_summary
 loaded_c_user = al.loaded_c_user
+save_cookies = al.save_cookies
+
 # Anti-lock đồng bộ theo từng cookie file (fingerprint + state đã per-bot trong anti_lock).
 check_daily_quota = al.check_daily_quota
 record_session_start = al.record_session_start
 set_soft_ban = al.set_soft_ban
+
+# Global để lưu trữ ctx/cookie_path dùng cho atexit/signal handler
+_save_ctx = None
+_save_cookie_path = None
+
+
+def _save_cookies_now(force: bool = True):
+    """G wrapper gọi save_cookies với ctx/cookie_path toàn cục (dùng cho atexit/signal)."""
+    if _save_ctx is not None and _save_cookie_path is not None:
+        save_cookies(_save_ctx, _save_cookie_path, force=force)
+
+
+def _on_exit():
+    """Hàm gọi khi thoát chương trình (atexit) — lưu cookie trước khi kết thúc."""
+    log("[atexit] Đang lưu cookie trước khi thoát...")
+    _save_cookies_now(force=True)
+
+
+def _on_signal(signum, frame):
+    """Hàm gọi khi nhận SIGTERM/SIGINT — lưu cookie rồi thoát."""
+    log(f"[signal] Nhận tín hiệu {signum}, đang lưu cookie trước khi thoát...")
+    _save_cookies_now(force=True)
+    sys.exit(128 + signum)
+
+
+# Đăng ký atexit + signal handlers
+atexit.register(_on_exit)
+try:
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
+except Exception as e:
+    log(f"[signal] Không đăng ký được signal handler: {e}")
 clear_soft_ban = al.clear_soft_ban
 
 
@@ -367,18 +403,21 @@ JS_SEND_SURRENDER = """() => new Promise((resolve) => {
             } catch(e) {}
             resolve(out);
         });
-        setTimeout(() => { if (!done) { done = true; resolve({ok: false, error: 'timeout 12s'}); } }, 12000);
+        setTimeout(() => { if (!done) { done = true; resolve({ok: false, error: 'timeout 60s'}); } }, 60000);
     } catch(e) { resolve({ok: false, error: e.toString()}); }
 })"""
 
 JS_CLICK_OK = """() => {
-    for (const b of document.querySelectorAll('.popup_button.confirm-button, button, input[type=button], a')) {
-        if (b.offsetParent === null) continue;
+    const patterns = ['OK','Đồng ý','Tiếp tục','Đóng','Chơi lại','Về lobby','Về phòng chờ','Về sảnh','Trở về','Rời bàn','Thoát','Quay về','Về ph\u00f2ng'];
+    for (const b of document.querySelectorAll('.popup_button.confirm-button, .popup-button, button, input[type=button], a, div[role=button]')) {
+        if (b.offsetParent === null && b.style && b.style.display === 'none') continue;
         const r = b.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
         const t = (b.innerText || b.textContent || b.value || '').trim();
-        if (/^(OK|Đồng ý|Tiếp tục|Đóng|Chơi lại|Về lobby|Về phòng chờ)$/i.test(t)) {
-            b.click(); return {clicked: true, text: t};
+        if (!t) continue;
+        if (patterns.some(p => t === p) || /về\s*(sảnh|lobby|phòng)/i.test(t) || /rời|thoát|trở về/i.test(t)) {
+            try { b.click(); } catch(e) {}
+            return {clicked: true, text: t};
         }
     }
     return {clicked: false};
@@ -516,48 +555,55 @@ def find_game_frame(page, max_wait=60):
         log(f"  [find_game_frame] diagnostic failed: {e}")
     return None
 
-def get_balance(game_frame):
-    try:
-        s = game_frame.evaluate(JS_GET_STATE)
-        return parse_bet(s.get("balance")), s
-    except Exception as e:
-        log(f"  [warn] get_balance failed: {type(e).__name__}")
-        return 0, {"path": None}
-
-
-def is_browser_alive(page):
-    """Check if the browser/page is still alive."""
-    try:
-        if page and page.is_closed():
-            return False
-        return True
-    except Exception:
-        return False
-
-
-def ensure_in_lobby(game_frame, page, max_attempts=3):
-    """Make sure we're back at Lobby (not in a table).
-    
-    On Facebook Gaming, lobby paths include: Lobby, Lobby.caro, Lobby.caro.0, etc.
-    """
+def ensure_in_lobby(game_frame, page, max_attempts=6):
+    """Make sure we're back at Lobby (not in a table)."""
     fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
-    for _ in range(max_attempts):
+    for a in range(max_attempts):
+        try:
+            s = game_frame.evaluate(JS_GET_STATE)
+            path = s.get("path")
+            if path in fb_lobby_paths or path == "Lobby":
+                return True
+            log(f"  [nav] path={path} — leaving table (attempt {a+1}/{max_attempts})...")
+            # try to close dialogs first
+            for _ in range(3):
+                try:
+                    game_frame.evaluate(JS_CLICK_OK)
+                except Exception:
+                    pass
+                time.sleep(1)
+            # try leave functions
+            for _ in range(3):
+                try:
+                    game_frame.evaluate(JS_GO_LOBBY)
+                except Exception:
+                    pass
+                time.sleep(1)
+            # try find exit/leave buttons
+            try:
+                game_frame.evaluate("""() => {
+                    const texts = ['Về sảnh','Về lobby','Về phòng','Trở về','Rời bàn','Thoát','Quay về'];
+                    for (const b of document.querySelectorAll('button,input[type=button],a,div[role=button]')) {
+                        if (b.offsetParent === null) continue;
+                        const t = (b.innerText||b.textContent||b.value||'').trim();
+                        if (texts.some(x=>t===x||t.includes(x))) { try{b.click();}catch(e){} }
+                    }
+                }""")
+            except Exception:
+                pass
+            time.sleep(2)
+            new_gf = find_game_frame(page, max_wait=20)
+            if new_gf:
+                game_frame = new_gf
+        except Exception as e:
+            log(f"  [nav] ensure_in_lobby err: {e}")
+            time.sleep(2)
+    try:
         s = game_frame.evaluate(JS_GET_STATE)
         path = s.get("path")
-        if path in fb_lobby_paths or path == "Lobby":
-            return True
-        log(f"  [nav] path={path} — leaving table...")
-        try:
-            game_frame.evaluate(JS_GO_LOBBY)
-        except Exception as e:
-            log(f"  [nav] leave err: {type(e).__name__}")
-        time.sleep(2)
-        new_gf = find_game_frame(page, max_wait=15)
-        if new_gf:
-            game_frame = new_gf
-    s = game_frame.evaluate(JS_GET_STATE)
-    path = s.get("path")
-    return path in fb_lobby_paths or path == "Lobby"
+        return path in fb_lobby_paths or path == "Lobby"
+    except Exception:
+        return False
 
 
 DEFAULT_GOMOKU_LOBBY = "Loby.caro.0"
@@ -699,23 +745,42 @@ def claim_until_threshold(game_frame, page, claim_min, claim_max, max_claims=200
 
 def open_table_browser(game_frame, page, filter_name="Tất cả"):
     """Click 'Chọn bàn' → filter (Tất cả / Còn trống).
-    Only operates in Gomoku lobby (Loby.caro.0); if not in Gomoku lobby, returns False.
+    Only operates in Gomoku lobby (Lobby.caro.0); if not in Gomoku lobby, returns False.
+    Returns True if table browser opened successfully, False otherwise.
     """
-    s = game_frame.evaluate(JS_GET_STATE)
-    current_path = s.get("path")
+    try:
+        s = game_frame.evaluate(JS_GET_STATE)
+        current_path = s.get("path")
+    except Exception as e:
+        log(f"  [open_table_browser] state check failed: {e}")
+        return False
     fb_lobby_paths = {"Lobby", "Lobby.caro", "Lobby.caro.0", "Lobby.caro.1"}
     if current_path not in fb_lobby_paths:
         log(f"  [open_table_browser] NOT in Gomoku lobby (path={current_path}) — refusing to search here")
         return False
-    game_frame.evaluate(JS_CLOSE_POPUPS)
-    time.sleep(0.5)
-    game_frame.evaluate(JS_CLICK_CHON_BAN)
-    time.sleep(5)
-    if filter_name == "Tất cả":
-        game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
-    elif filter_name == "Còn trống":
-        game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
-    time.sleep(2)
+    try:
+        game_frame.evaluate(JS_CLOSE_POPUPS)
+        time.sleep(0.5)
+        # Click "Chọn bàn" to open table browser
+        game_frame.evaluate(JS_CLICK_CHON_BAN)
+        time.sleep(3)
+        # Apply filter
+        if filter_name == "Tất cả":
+            game_frame.evaluate(JS_CLICK_FILTER_TAT_CA)
+        elif filter_name == "Còn trống":
+            game_frame.evaluate(JS_CLICK_FILTER_CON_TRONG)
+        time.sleep(1)
+        # Verify table browser opened by checking for table elements
+        tables = game_frame.evaluate("() => document.querySelectorAll('div[id^=table_]').length")
+        if tables and tables > 0:
+            log(f"  [open_table_browser] ✓ table browser open, {tables} tables visible")
+            return True
+        else:
+            log(f"  [open_table_browser] ⚠ no tables visible — browser may not have opened")
+            return False
+    except Exception as e:
+        log(f"  [open_table_browser] error: {e}")
+        return False
 
 
 def find_target_table(game_frame, target_name, bet_max):
@@ -925,9 +990,7 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     if not goto_lobby_path(game_frame, page, lobby_path=DEFAULT_GOMOKU_LOBBY):
         log("    [!] couldn't reach Gomoku lobby — trying ensure_in_lobby instead")
         ensure_in_lobby(game_frame, page)
-    open_table_browser(game_frame, page, filter_name="Tất cả")
-
-    # Step 1+2: poll for target's table with retry (waits up to target_wait_seconds)
+    open_table_browser(game_frame, page, filter_name="Tất cả")    # Step 1+2: poll for target's table with retry (waits up to target_wait_seconds)
     log(f"  [1+2] looking for target (id={target_id}, name={target_name!r}) up to {target_wait_seconds}s...")
     target = wait_for_target_with_retry(game_frame, page, target_name, target_id, bet_max,
                                          max_wait_seconds=target_wait_seconds,
@@ -945,7 +1008,21 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
 
     # Step 3: click on target table
     log(f"  [3] clicking table {target['id']}...")
-    game_frame.evaluate(JS_CLICK_TABLE, target["id"])
+    try:
+        click_result = game_frame.evaluate(JS_CLICK_TABLE, target["id"])
+        if not click_result or not click_result.get("clicked"):
+            log(f"    [!] table click failed — table may have disappeared. Retrying...")
+            # Try once more, in case the table was refreshed
+            time.sleep(1)
+            click_result = game_frame.evaluate(JS_CLICK_TABLE, target["id"])
+            if not click_result or not click_result.get("clicked"):
+                log("    [!] table click failed again — aborting round")
+                return False, 0
+            else:
+                log("    ✓ table click succeeded on retry")
+    except Exception as e:
+        log(f"    [!] table click error: {e}")
+        return False, 0
     time.sleep(5)
 
     # Step 4: click "Vào chơi"
@@ -1009,18 +1086,51 @@ def surrender_one_round(game_frame, page, target_name, target_id, bet_max, targe
     if not in_match:
         log("    [!] not in match yet — will try SURRENDER anyway")
 
-    # Step 6: send SURRENDER immediately (2x quickly) then exit for claim
-    log("  [*] gửi SURRENDER ngay (2 lần) rồi thoát để claim lại...")
-    for s in range(2):
+    # Step 6: send SURRENDER - check for errors and verify balance change
+    log("  [*] gửi SURRENDER và xác minh thành công (theo dõi số dư thay đổi)...")
+    surrender_confirmed = False
+    surrender_failed = False
+    for s in range(5):
         try:
             r = game_frame.evaluate(JS_SEND_SURRENDER)
             log(f"    [surrender {s+1}] result: {r}")
             err_msg = str(r.get("err_msg", "")).lower()
+            # Check for fatal errors - game already ended or not a player
             if "ván chơi đã kết thúc" in err_msg or "van choi da ket thuc" in err_msg:
+                log("    [!] ván chơi đã kết thúc - không cần SURRENDER nữa")
+                surrender_failed = True
                 break
+            if "không tham gia" in err_msg or "chưa tham gia" in err_msg:
+                log("    [!] chưa là người chơi - chờ và thử lại...")
+                time.sleep(1)
+                continue
+            # Check if surrender was accepted (ok=True or err_code=22)
+            if r.get("ok", False) or r.get("err_code") == 22:
+                # Verify balance change to confirm success
+                time.sleep(2)
+                try:
+                    bal_now, _ = get_balance(game_frame)
+                    if bal_now < bal_before:
+                        lost = bal_before - bal_now
+                        log(f"    ✓ SURRENDER thành công - số dư thay đổi -{lost:,} xu")
+                        surrender_confirmed = True
+                        break
+                except Exception:
+                    pass
         except Exception as e:
             log(f"    [surrender {s+1}] err: {e}")
         time.sleep(1)
+    
+    if not surrender_confirmed and not surrender_failed:
+        # Last-ditch: check balance once more
+        try:
+            bal_final, _ = get_balance(game_frame)
+            if bal_final < bal_before:
+                log(f"    ✓ SURRENDER succeeded - balance changed (last check)")
+                surrender_confirmed = True
+        except Exception:
+            pass
+
     time.sleep(1)
     try:
         if page and not page.is_closed():
@@ -1138,17 +1248,17 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             break
         time.sleep(2)
     
-        # Send SURRENDER - wait ~3s then retry until balance changes
+    # Send SURRENDER - wait ~3s then retry until balance changes
     log("  [*] Chờ ~3s, gửi SURRENDER lặp lại đến khi số dư thay đổi (xác nhận thành công)...")
     time.sleep(3)
     bal_surr_check = bal_before
     surrender_ok = False
-    for sv in range(30):
+    for s in range(30):
         try:
             r = game_frame.evaluate(JS_SEND_SURRENDER)
-            log(f"    [surrender {sv+1}] result: {r}")
+            log(f"    [surrender {s+1}] result: {r}")
         except Exception as e:
-            log(f"    [surrender {sv+1}] err: {e}")
+            log(f"    [surrender {s+1}] err: {e}")
             r = {}
         time.sleep(2)
         try:
@@ -1161,26 +1271,63 @@ def create_own_table_and_surrender(game_frame, page, bet_amount=40000, wait_for_
             bal_before = bal_surr_check
             break
         err_msg = str(r.get("err_msg", "")).lower()
+        if "ván chơi đã kết thúc" in err_msg or "van choi da ket thuc" in err_msg:
+            log("    [!] ván chơi đã kết thúc - đóng browser để sang chu kỳ claim tiếp theo...")
+            for _ in range(10):
+                try:
+                    game_frame.evaluate(JS_CLICK_OK)
+                except Exception:
+                    pass
+                try:
+                    game_frame.evaluate(JS_GO_LOBBY)
+                except Exception:
+                    pass
+                time.sleep(1)
+            try:
+                if page and not page.is_closed():
+                    page.close()
+            except Exception:
+                pass
+            raise BrowserCrashed("game ended - restarting to claim")
         if "không tham gia" in err_msg or "chưa tham gia" in err_msg:
-            log("    [!] chưa là người chơi - chờ 3s rồi thử lại...")
-            time.sleep(3)
+            log("    [!] chưa là người chơi - chờ 2s rồi thử lại...")
+            try:
+                game_frame.evaluate(JS_CLICK_OK)
+            except Exception:
+                pass
+            try:
+                game_frame.evaluate(JS_GO_LOBBY)
+            except Exception:
+                pass
+            time.sleep(2)
             continue
         if r.get("ok") or r.get("err_code") == 22:
-            time.sleep(3)
+            time.sleep(2)
             continue
         time.sleep(2)
     if not surrender_ok:
         log("    [!] chưa thấy thay đổi số dư, vẫn tiếp tục xử lý")
-# Close dialogs
+    
+    # Close dialogs
     log("  [7] closing dialog + returning to lobby...")
     time.sleep(3)
-    for _ in range(5):
-        clicked = game_frame.evaluate(JS_CLICK_OK)
-        if clicked.get("clicked"):
-            time.sleep(1)
-            break
+    for _ in range(10):
+        try:
+            clicked = game_frame.evaluate(JS_CLICK_OK)
+            if clicked.get("clicked"):
+                time.sleep(2)
+                break
+        except Exception:
+            pass
         time.sleep(1)
-    
+    for _ in range(5):
+        try:
+            game_frame.evaluate(JS_GO_LOBBY)
+        except Exception:
+            pass
+        time.sleep(2)
+    ensure_in_lobby(game_frame, page)
+    time.sleep(2)
     ensure_in_lobby(game_frame, page)
     
     # Final balance
@@ -1198,7 +1345,12 @@ class StopCycle(Exception):
 
 
 class BrowserCrashed(Exception):
-    """Raise when browser/page/frame is closed unexpectedly."""
+    """Raise when browser/page/frame is closed unexpectedly (genuine crash)."""
+    pass
+
+
+class SurrenderDone(Exception):
+    """Raise when surrender phase is complete and we should restart for the next claim cycle (intentional, not a crash)."""
     pass
 
 
@@ -1216,7 +1368,7 @@ def get_balance(game_frame):
         raise  # re-raise other exceptions
 
 def _run_cycle(args, game_frame, page, p, cycle_num, cycle_results,
-               total_xu_to_target, cookies, fp, ctx):
+                total_xu_to_target, cookies, fp, ctx):
     """Execute one claim → surrender cycle. Called from main() with error handling."""
     # Check min balance
     try:
@@ -1261,49 +1413,63 @@ def _run_cycle(args, game_frame, page, p, cycle_num, cycle_results,
             raise StopCycle
 
     # PHASE 2: SURRENDER
-    if args.mode == "create_own_table":
-        bet_amount = args.bet_amount
-        if final_bal < bet_amount:
-            log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu) ===")
-            log(f"  [SKIP] balance {final_bal:,} < bet {bet_amount:,} — not enough funds")
-            cycle_results.append({
-                "cycle": cycle_num,
-                "balance_after_claim": final_bal,
-                "surrender_ok": False,
-                "xu_lost": 0,
-            })
-            if cycle_num < args.cycles:
-                time.sleep(args.delay_between_cycles)
-            return
-        log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
-        ok, lost = create_own_table_and_surrender(
-            game_frame, page, bet_amount=bet_amount,
-            wait_for_opponent=args.wait_for_opponent,
-            opponent_wait_seconds=args.opponent_wait_seconds,
-            min_balance=args.min_balance,
-        )
-        target_label = "self-created table"
-    else:
-        log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
-        ok, lost = surrender_one_round(game_frame, page, args.target_name, args.target_id, args.bet_max,
-                                       target_wait_seconds=args.target_wait_seconds,
-                                       max_tables_to_scan=args.max_tables_to_scan)
-        target_label = f"target '{args.target_name}' (id={args.target_id})"
+    ok = False
+    lost = 0
+    target_label = ""
+    try:
+        if args.mode == "create_own_table":
+            bet_amount = args.bet_amount
+            if final_bal < bet_amount:
+                log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu) ===")
+                log(f"  [SKIP] balance {final_bal:,} < bet {bet_amount:,} — not enough funds")
+                cycle_results.append({
+                    "cycle": cycle_num,
+                    "balance_after_claim": final_bal,
+                    "surrender_ok": False,
+                    "xu_lost": 0,
+                })
+                if cycle_num < args.cycles:
+                    time.sleep(args.delay_between_cycles)
+                return
+            log(f"\n=== Phase 2: CREATE OWN TABLE ({bet_amount:,} xu, wait for opponent) ===")
+            ok, lost = create_own_table_and_surrender(
+                game_frame, page, bet_amount=bet_amount,
+                wait_for_opponent=args.wait_for_opponent,
+                opponent_wait_seconds=args.opponent_wait_seconds,
+                min_balance=args.min_balance,
+            )
+            target_label = "self-created table"
+        else:
+            log(f"\n=== Phase 2: SURRENDER to target (id={args.target_id}, name={args.target_name!r}) ===")
+            ok, lost = surrender_one_round(game_frame, page, args.target_name, args.target_id, args.bet_max,
+                                           target_wait_seconds=args.target_wait_seconds,
+                                           max_tables_to_scan=args.max_tables_to_scan)
+            target_label = f"target '{args.target_name}' (id={args.target_id})"
 
-    total_xu_to_target += lost
-    cycle_results.append({
-        "cycle": cycle_num,
-        "balance_after_claim": final_bal,
-        "surrender_ok": ok,
-        "xu_lost": lost,
-    })
-    log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target:,}")
+        total_xu_to_target[0] += lost
+        cycle_results.append({
+            "cycle": cycle_num,
+            "balance_after_claim": final_bal,
+            "surrender_ok": ok,
+            "xu_lost": lost,
+        })
+        log(f"\n[cycle {cycle_num}] surrender {'✓' if ok else '✗'} | lost {lost:,} xu | target: {target_label} | total: {total_xu_to_target[0]:,}")
 
-    # Re-find game frame for status reporting
-    new_gf = find_game_frame(page, max_wait=10)
-    if new_gf:
-        game_frame = new_gf
-    return game_frame
+        # Re-find game frame for status reporting
+        new_gf = find_game_frame(page, max_wait=10)
+        if new_gf:
+            game_frame = new_gf
+        return game_frame
+
+    except SurrenderDone as e:
+        log(f"[SUCCEED] surrender completed — restarting for claim: {e}")
+        raise
+    except BrowserCrashed as e:
+        log(f"[ERROR] browser crashed during surrender: {e}")
+        raise
+    except Exception as e:
+        log(f"[ERROR] unexpected error during surrender: {type(e).__name__}: {e}")
+        raise
 
 
 def restart_browser(page, ctx, profile_dir, cookies, fp, p, headless=True):
@@ -1354,7 +1520,7 @@ def restart_browser(page, ctx, profile_dir, cookies, fp, p, headless=True):
 
 def main():
     parser = argparse.ArgumentParser(description="Gomoku auto-cycle: claim → surrender → claim → surrender ...")
-    parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck15.txt"),
+    parser.add_argument("--cookie", default=os.environ.get("SINGLE_COOKIE_FILE", "ck.txt"),
                         help="Cookie file (default: ck.txt)")
     parser.add_argument("--target-name", default="nguyen123456",
                         help="Player name to find in tables (target name to find in tables)")
@@ -1420,7 +1586,7 @@ def main():
     log(f"         bet_max={args.bet_max:,}, cycles={args.cycles}, mode={args.mode}")
 
     cycle_results = []
-    total_xu_to_target = 0
+    total_xu_to_target = [0]  # mutable container for cross-function updates
     with sync_playwright() as p:
         ctx, profile_dir = al.launch_private_context(
             p,
@@ -1433,7 +1599,7 @@ def main():
                 "user_agent": fp["user_agent"],
                 "timezone_id": fp["timezone"],
                 "color_scheme": fp.get("color_scheme", "light"),
-            },
+        },
         )
         ctx.add_init_script(al.build_stealth_js(fp))
         # Wipe storage before loading cookies (clean slate, like repo ck)
@@ -1441,10 +1607,13 @@ def main():
         al.wipe_storage(ctx, _wipe_page)
         _wipe_page.close()
         apply_cookies(ctx, cookies)
+        # Lưu ctx + cookie_path để atexit/signal handler có thể lưu cookie khi thoát
+        _save_ctx = ctx
+        _save_cookie_path = cookie_path
         page = ctx.new_page()
         page.set_default_timeout(45000)
 
-        log(f"\n[setup] goto FB home → {GAME_URL}")
+        log(f"\n[setup] goto game page directly → {GAME_URL}")
         goto_response = page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(30000)
         try:
@@ -1457,6 +1626,7 @@ def main():
                 # không mở browser spam nick này.
                 if ev["state"] == "checkpoint":
                     set_soft_ban(cookie_path, duration_s=900, escalate=True)
+                log(f"[ERR] evidence={format_evidence(ev)}")
                 if ev["state"] == "logged_out":
                     log("[ERR] Cookie đã bị server thu hồi hoặc không hợp lệ → "
                         "cần đăng nhập lại thủ công rồi cập nhật ck*.txt.")
@@ -1474,6 +1644,7 @@ def main():
             # Đã login: lưu ngay cookie server vừa cấp (datr/sb/xs có thể đã đổi)
             clear_soft_ban(cookie_path)
             record_session_start(cookie_path)
+            save_cookies(ctx, cookie_path, force=True)
             # Warm-up: scroll FB feed truoc khi vao game (giong nguoi thuc)
             try:
                 al.warm_up_account(page, max_s=15)
@@ -1541,14 +1712,63 @@ def main():
             log(f"# CYCLE {cycle_num}/{args.cycles}")
             log(f"{'#' * 60}")
 
+            # Lưu cookie định kỳ để giữ session sống (tự throttle COOKIE_SAVE_INTERVAL)
+            save_cookies(ctx, cookie_path)
+
             # Proactive browser restart between cycles to prevent crash accumulation
             if cycle_num > 1:
-                ctx, profile_dir, page, game_frame = restart_browser(
-                    page, ctx, profile_dir, cookies, fp, p, headless=args.headless
-                )
-                if not game_frame:
-                    log("[!] failed to restart browser — stopping")
-                    break
+                try:
+                    # Lưu cookie trước khi đóng context cũ
+                    save_cookies(ctx, cookie_path, force=True)
+                    ctx, profile_dir, page, game_frame = restart_browser(
+                        page, ctx, profile_dir, cookies, fp, p, headless=args.headless
+                    )
+                    # Cập nhật ctx toàn cục để atexit/signal handler lưu cookie đúng context mới
+                    _save_ctx = ctx
+                    _save_cookie_path = cookie_path
+                    if not game_frame:
+                        log("[!] failed to restart browser — stopping")
+                        break
+                except Exception as e:
+                    log(f"[!] restart_browser failed: {e} — attempting relaunch...")
+                    try:
+                        al.close_private_context(ctx, profile_dir)
+                    except: pass
+                    try:
+                        ctx, profile_dir = al.launch_private_context(
+                            p,
+                            headless=args.headless,
+                            args=al.stealth_launch_args(fp),
+                            context_kwargs=
+                            {
+                                "viewport": fp["viewport"],
+                                "locale": fp["locale"],
+                                "user_agent": fp["user_agent"],
+                                "timezone_id": fp["timezone"],
+                                "color_scheme": fp.get("color_scheme", "light"),
+                            },
+                        )
+                        ctx.add_init_script(al.build_stealth_js(fp))
+                        # Wipe storage before loading cookies (clean slate, like repo ck)
+                        _wipe_page = ctx.new_page()
+                        al.wipe_storage(ctx, _wipe_page)
+                        _wipe_page.close()
+                        apply_cookies(ctx, cookies)
+                        page = ctx.new_page()
+                        page.set_default_timeout(45000)
+                        _save_ctx = ctx
+                        _save_cookie_path = cookie_path
+                        page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
+                        page.wait_for_timeout(30000)
+                        game_frame = find_game_frame(page, max_wait=60)
+                        if game_frame:
+                            log("  ✓ browser relaunched, game frame ready")
+                        else:
+                            log("  ✗ failed to find game frame after relaunch")
+                            break
+                    except Exception as e2:
+                        log(f"  ✗ relaunch failed: {e2}")
+                        break
 
             # Catch browser crashes / page closed errors
             result = None
@@ -1559,6 +1779,45 @@ def main():
                     game_frame = result  # Update with refreshed game frame
             except StopCycle:
                 log(f"  [STOP] cycle stopped early")
+                continue
+            except SurrenderDone as e:
+                log(f"  [Surrender completed] restarting browser for next claim cycle: {e}")
+                # Browser already closed in surrender function, relaunch for next cycle
+                try:
+                    ctx, profile_dir = al.launch_private_context(
+                        p,
+                        headless=args.headless,
+                        args=al.stealth_launch_args(fp),
+                        context_kwargs=
+                        {
+                            "viewport": fp["viewport"],
+                            "locale": fp["locale"],
+                            "user_agent": fp["user_agent"],
+                            "timezone_id": fp["timezone"],
+                            "color_scheme": fp.get("color_scheme", "light"),
+                        },
+                    )
+                    ctx.add_init_script(al.build_stealth_js(fp))
+                    # Wipe storage before loading cookies (clean slate, like repo ck)
+                    _wipe_page = ctx.new_page()
+                    al.wipe_storage(ctx, _wipe_page)
+                    _wipe_page.close()
+                    apply_cookies(ctx, cookies)
+                    page = ctx.new_page()
+                    page.set_default_timeout(45000)
+                    _save_ctx = ctx
+                    _save_cookie_path = cookie_path
+                    page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(30000)
+                    game_frame = find_game_frame(page, max_wait=60)
+                    if game_frame:
+                        log("  ✓ browser relaunched after surrender, ready for next cycle")
+                    else:
+                        log("  [!] failed to relaunch browser after surrender")
+                        break
+                except Exception as e2:
+                    log(f"  [!] relaunch after surrender failed: {e2}")
+                    break
                 continue
             except Exception as e:
                 err_type = type(e).__name__
@@ -1590,6 +1849,8 @@ def main():
                         apply_cookies(ctx, cookies)
                         page = ctx.new_page()
                         page.set_default_timeout(45000)
+                        _save_ctx = ctx
+                        _save_cookie_path = cookie_path
                         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
                         page.wait_for_timeout(30000)
                         game_frame = find_game_frame(page, max_wait=60)
@@ -1630,7 +1891,7 @@ def main():
     if args.mode == "create_own_table":
         log(f"Total cycles completed: {len(cycle_results)}/{args.cycles}")
     else:
-        log(f"Total xu sent to '{args.target_name}': {total_xu_to_target:,} xu")
+        log(f"Total xu sent to '{args.target_name}': {total_xu_to_target[0]:,} xu")
         log(f"Total cycles completed: {len(cycle_results)}/{args.cycles}")
     return 0 if cycle_results else 1
 

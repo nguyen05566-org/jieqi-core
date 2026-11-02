@@ -41,6 +41,8 @@ import time
 import random
 import json
 import subprocess
+import atexit
+import signal
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import anti_lock as al
@@ -63,11 +65,44 @@ detect_login_state = al.detect_login_state
 format_evidence = al.format_evidence
 last_load_summary = al.last_load_summary
 loaded_c_user = al.loaded_c_user
+save_cookies = al.save_cookies
 
 # Anti-lock đồng bộ theo từng cookie file (fingerprint + state đã per-bot trong anti_lock).
 check_daily_quota = al.check_daily_quota
 record_session_start = al.record_session_start
 set_soft_ban = al.set_soft_ban
+
+# Global để lưu trữ ctx/cookie_path dùng cho atexit/signal handler
+_save_ctx = None
+_save_cookie_path = None
+
+
+def _save_cookies_now(force: bool = True):
+    """G wrapper gọi save_cookies với ctx/cookie_path toàn cục (dùng cho atexit/signal)."""
+    if _save_ctx is not None and _save_cookie_path is not None:
+        save_cookies(_save_ctx, _save_cookie_path, force=force)
+
+
+def _on_exit():
+    """Hàm gọi khi thoát chương trình (atexit) — lưu cookie trước khi kết thúc."""
+    log("[atexit] Đang lưu cookie trước khi thoát...")
+    _save_cookies_now(force=True)
+
+
+def _on_signal(signum, frame):
+    """Hàm gọi khi nhận SIGTERM/SIGINT — lưu cookie rồi thoát."""
+    log(f"[signal] Nhận tín hiệu {signum}, đang lưu cookie trước khi thoát...")
+    _save_cookies_now(force=True)
+    sys.exit(128 + signum)
+
+
+# Đăng ký atexit + signal handlers
+atexit.register(_on_exit)
+try:
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
+except Exception as e:
+    log(f"[signal] Không đăng ký được signal handler: {e}")
 clear_soft_ban = al.clear_soft_ban
 
 
@@ -1572,6 +1607,9 @@ def main():
         al.wipe_storage(ctx, _wipe_page)
         _wipe_page.close()
         apply_cookies(ctx, cookies)
+        # Lưu ctx + cookie_path để atexit/signal handler có thể lưu cookie khi thoát
+        _save_ctx = ctx
+        _save_cookie_path = cookie_path
         page = ctx.new_page()
         page.set_default_timeout(45000)
 
@@ -1606,6 +1644,7 @@ def main():
             # Đã login: lưu ngay cookie server vừa cấp (datr/sb/xs có thể đã đổi)
             clear_soft_ban(cookie_path)
             record_session_start(cookie_path)
+            save_cookies(ctx, cookie_path, force=True)
             # Warm-up: scroll FB feed truoc khi vao game (giong nguoi thuc)
             try:
                 al.warm_up_account(page, max_s=15)
@@ -1673,12 +1712,20 @@ def main():
             log(f"# CYCLE {cycle_num}/{args.cycles}")
             log(f"{'#' * 60}")
 
+            # Lưu cookie định kỳ để giữ session sống (tự throttle COOKIE_SAVE_INTERVAL)
+            save_cookies(ctx, cookie_path)
+
             # Proactive browser restart between cycles to prevent crash accumulation
             if cycle_num > 1:
                 try:
+                    # Lưu cookie trước khi đóng context cũ
+                    save_cookies(ctx, cookie_path, force=True)
                     ctx, profile_dir, page, game_frame = restart_browser(
                         page, ctx, profile_dir, cookies, fp, p, headless=args.headless
                     )
+                    # Cập nhật ctx toàn cục để atexit/signal handler lưu cookie đúng context mới
+                    _save_ctx = ctx
+                    _save_cookie_path = cookie_path
                     if not game_frame:
                         log("[!] failed to restart browser — stopping")
                         break
@@ -1709,6 +1756,8 @@ def main():
                         apply_cookies(ctx, cookies)
                         page = ctx.new_page()
                         page.set_default_timeout(45000)
+                        _save_ctx = ctx
+                        _save_cookie_path = cookie_path
                         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
                         page.wait_for_timeout(30000)
                         game_frame = find_game_frame(page, max_wait=60)
@@ -1756,6 +1805,8 @@ def main():
                     apply_cookies(ctx, cookies)
                     page = ctx.new_page()
                     page.set_default_timeout(45000)
+                    _save_ctx = ctx
+                    _save_cookie_path = cookie_path
                     page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
                     page.wait_for_timeout(30000)
                     game_frame = find_game_frame(page, max_wait=60)
@@ -1798,6 +1849,8 @@ def main():
                         apply_cookies(ctx, cookies)
                         page = ctx.new_page()
                         page.set_default_timeout(45000)
+                        _save_ctx = ctx
+                        _save_cookie_path = cookie_path
                         page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
                         page.wait_for_timeout(30000)
                         game_frame = find_game_frame(page, max_wait=60)

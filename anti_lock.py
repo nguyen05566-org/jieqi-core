@@ -19,6 +19,9 @@ DEST_FILE     = os.environ.get("TRANSFER_DEST_FILE", os.path.join(_HERE, "transf
 IDLE_WAIT_MIN = float(os.environ.get("IDLE_WAIT_MIN", "10"))
 IDLE_WAIT_MAX = float(os.environ.get("IDLE_WAIT_MAX", "30"))
 
+# Throttle lưu cookie (giây) — mặc định 5 phút, có thể override bằng env
+COOKIE_SAVE_INTERVAL = float(os.environ.get("COOKIE_SAVE_INTERVAL", "300"))
+
 # =====================================================================
 # A) FINGERPRINT POOLS
 # =====================================================================
@@ -1165,6 +1168,75 @@ def last_load_summary():
 
 def loaded_c_user():
     return _LAST_LOAD.get("c_user")
+
+
+# =====================================================================
+# J) COOKIE SAVE — ghi ngược cookie từ browser context về ck*.txt
+# =====================================================================
+_last_cookie_save_time = 0.0
+
+
+def save_cookies(ctx, cookie_path: str, force: bool = False) -> bool:
+    """Lưu cookie Facebook từ browser context về file ck*.txt (dạng phẳng a=b; c=d).
+
+    Quy tắc bảo vệ:
+    - Từ chối ghi nếu context thiếu c_user hoặc xs (tránh ghi đè session rỗng).
+    - Throttle theo COOKIE_SAVE_INTERVAL trừ khi force=True.
+    - Ghi nguyên tử (write .tmp rồi os.replace) để không bị hỏng file nếu crash giữa chừng.
+    """
+    global _last_cookie_save_time
+
+    if ctx is None:
+        return False
+
+    now = time.time()
+    if not force and (now - _last_cookie_save_time) < COOKIE_SAVE_INTERVAL:
+        return False
+
+    try:
+        cookies = ctx.cookies() or []
+    except Exception as e:
+        log.warning(f"[save_cookies] Không đọc được cookie từ context: {e}")
+        return False
+
+    # Chỉ lấy cookie của Facebook
+    fb_cookies = [
+        c for c in cookies
+        if (c.get("domain") or "").endswith("facebook.com")
+    ]
+
+    # Kiểm tra có đủ c_user + xs không
+    names = {c.get("name") for c in fb_cookies}
+    has_c_user = "c_user" in names and any(
+        c.get("name") == "c_user" and c.get("value") for c in fb_cookies)
+    has_xs = "xs" in names and any(
+        c.get("name") == "xs" and c.get("value") for c in fb_cookies)
+
+    if not (has_c_user and has_xs):
+        log.warning("[save_cookies] Thiếu c_user hoặc xs — từ chối ghi (tránh ghi đè session rỗng)")
+        return False
+
+    # Ghi ra file flat format
+    try:
+        parts = []
+        for c in fb_cookies:
+            name = (c.get("name") or "").strip()
+            value = (c.get("value") or "").strip()
+            if name:
+                parts.append(f"{name}={value}")
+        content = "; ".join(parts)
+
+        tmp_path = cookie_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, cookie_path)
+
+        _last_cookie_save_time = now
+        log.info(f"[save_cookies] Đã lưu {len(fb_cookies)} cookie Facebook vào {cookie_path}")
+        return True
+    except Exception as e:
+        log.warning(f"[save_cookies] Ghi file thất bại: {e}")
+        return False
 
 
 def current_context():
