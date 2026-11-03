@@ -1,0 +1,73 @@
+name: capture_token
+
+on:
+  workflow_dispatch:
+    inputs:
+      cookie_file:
+        description: 'Cookie file (e.g. ck1.txt, or "all" for all)'
+        required: false
+        default: 'all'
+  schedule:
+    - cron: '0 */6 * * *'  # mỗi 6h
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: capture-token
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        cookie: [ck1, ck2, ck3, ck5, ck6, ck7, ck8, ck9, ck10, ck11, ck12, ck13, ck14, ck15, ck20, ck21, ck30, ck31, ck32, ck33, ck34, ck35, ck36]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright requests
+          playwright install chromium --with-deps
+
+      - name: Check cookie file exists
+        id: check
+        run: |
+          if [ ! -f ${{ matrix.cookie }}.txt ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+          else
+            SIZE=$(wc -c < ${{ matrix.cookie }}.txt)
+            if [ "$SIZE" -lt 100 ]; then
+              echo "exists=false" >> $GITHUB_OUTPUT
+            else
+              echo "exists=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Capture token
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          mkdir -p state/tokens
+          python3 capture_token.py --cookie ${{ matrix.cookie }}.txt --output state/tokens/${{ matrix.cookie }}_token.json
+
+      - name: Commit tokens
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          git config user.name "jieqi-bot"
+          git config user.email "actions@github.com"
+          git add state/tokens/*.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No token changes"
+          else
+            git commit -m "Update token: ${{ matrix.cookie }}"
+            git push
+          fi
