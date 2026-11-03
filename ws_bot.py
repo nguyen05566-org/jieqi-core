@@ -244,16 +244,42 @@ class WSBot:
                 self.slot = br.i8(); self.balance = br.i64()
         return False
 
-    async def ready_wait_surrender(self, max_wait=60):
-        """SET_READY → wait for game start → SURRENDER. Returns (success, lost)."""
+    async def ready_wait_surrender(self, max_wait=120):
+        """Detect seated vs spectating. If seated → SET_READY → wait START_MATCH → 3s → SURRENDER.
+        If spectating → wait GAMEOVER → return 'spectating'.
+        Returns (status, lost): status = 'surrendered'/'spectating'/'timeout'."""
         bal_before = self.balance
-        log(f"  balance before surrender: {bal_before:,}")
+        log(f"  balance: {bal_before:,} | slot={self.slot}")
 
-        # SET_READY
+        # Check if seated (slot >= 0) or spectating (slot < 0)
+        if self.slot < 0:
+            log(f"  [SPECTATING] slot={self.slot} — waiting for GAMEOVER to get a seat...")
+            deadline = time.time() + max_wait
+            while time.time() < deadline:
+                cmd, br, raw = await self.recv_cmd(timeout=3)
+                if cmd is None: continue
+                if cmd == "PING": await self.send_pong()
+                elif cmd == "GAMEOVER":
+                    log(f"  Game over — trying to join seat...")
+                    # After GAMEOVER, table might have a free seat — re-ENTER_PLACE
+                    await asyncio.sleep(2)
+                    return "spectating", 0
+                elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
+                    self.slot = br.i8(); self.balance = br.i64()
+                    if self.slot >= 0:
+                        log(f"  ✓ Got seat! slot={self.slot}")
+                        break
+            if self.slot < 0:
+                log(f"  [!] Still spectating after {max_wait}s")
+                return "spectating", 0
+
+        # Seated (slot >= 0) → SET_READY → wait START_MATCH → SURRENDER
+        log(f"  [SEATED] slot={self.slot} → SET_READY")
         w = BW(); w.wc("SET_READY")
         await self.send(w.build())
-        log(f"  SET_READY sent, waiting for opponent (max {max_wait}s)...")
 
+        # Wait for START_MATCH (max 120s — target needs to ready)
+        log(f"  Waiting for START_MATCH (max {max_wait}s)...")
         deadline = time.time() + max_wait
         game_started = False
         while time.time() < deadline:
@@ -264,41 +290,44 @@ class WSBot:
                 log(f"  ✓ GAME STARTED!")
                 break
             elif cmd == "PING": await self.send_pong()
-            elif cmd == "PLAYER_ENTERED":
-                log(f"  Player joined!")
-                w2 = BW(); w2.wc("SET_READY"); await self.send(w2.build())
             elif cmd == "SET_TURN" and not game_started:
+                # Lobby countdown — re-SET_READY
                 w2 = BW(); w2.wc("SET_READY"); await self.send(w2.build())
-            elif cmd == "BALANCE_CHANGED" and br.rem() >= 9:
+            elif cmd == "PLAYER_ENTERED":
+                w2 = BW(); w2.wc("SET_READY"); await self.send(w2.build())
+            elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
+            elif cmd == "GAMEOVER":
+                log(f"  Game over (without us?) — retry")
+                return "spectating", 0
 
         if not game_started:
             log(f"  [!] Game didn't start in {max_wait}s")
-            return False, 0
+            return "timeout", 0
 
-        # SURRENDER
-        await asyncio.sleep(1)
+        # SURRENDER after 3s (let game state settle)
+        await asyncio.sleep(3)
         log(f"  Sending SURRENDER...")
         w = BW(); w.wc("SURRENDER")
         await self.send(w.build())
 
-        # Wait for balance change
+        # Wait for balance change (confirm xu lost)
         deadline = time.time() + 15
         while time.time() < deadline:
             cmd, br, raw = await self.recv_cmd(timeout=2)
             if cmd is None: continue
-            if cmd == "BALANCE_CHANGED" and br.rem() >= 9:
+            if cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
                 if self.balance < bal_before:
                     lost = bal_before - self.balance
                     log(f"  ✓✓ SURRENDER SUCCESS! lost {lost:,} xu ✓✓")
-                    return True, lost
+                    return "surrendered", lost
             elif cmd == "PING": await self.send_pong()
             elif cmd == "GAMEOVER":
                 log(f"  Game over")
 
         log(f"  [!] No balance change after surrender")
-        return False, 0
+        return "timeout", 0
 
     async def find_target_table(self, target_name, target_id):
         """Find target's table via LIST_ZONE_TABLE — search for name (UTF-16-BE).
@@ -376,74 +405,115 @@ class WSBot:
 
 # ======================== MAIN ========================
 async def main():
-    parser = argparse.ArgumentParser(description="Pure WS bot — no browser")
+    parser = argparse.ArgumentParser(description="Pure WS bot — continuous claim + surrender")
     parser.add_argument("--token-file", required=True, help="Path to token JSON file")
     parser.add_argument("--target-name", default=os.environ.get("TARGET_NAME", "nguyen123456"))
     parser.add_argument("--target-id", type=int, default=int(os.environ.get("TARGET_ID", "68982512")))
     parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "40000")))
     parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "55000")))
-    parser.add_argument("--bet-id", type=int, default=int(os.environ.get("BET_ID", "10")),
-                        help="bet_amt_id (5=1000, 7=4000, 10=40000)")
+    parser.add_argument("--bet-id", type=int, default=int(os.environ.get("BET_ID", "10")))
     parser.add_argument("--max-claims", type=int, default=int(os.environ.get("MAX_CLAIMS", "30")))
+    parser.add_argument("--runtime", type=int, default=int(os.environ.get("RUNTIME_SECONDS", "1800")),
+                        help="Total runtime in seconds (default 1800 = 30 min)")
     args = parser.parse_args()
 
-    # Load token
     data = json.loads(Path(args.token_file).read_text())
     ws_url = data["ws_url"]
     login_frames = [bytes.fromhex(h) for h in data["frames"]]
 
     log(f"{'='*60}")
-    log(f"PURE WS BOT (no browser)")
+    log(f"PURE WS BOT — continuous loop")
     log(f"  Token: {args.token_file}")
-    log(f"  WS URL: {ws_url}")
     log(f"  Target: {args.target_name} (id={args.target_id})")
     log(f"  Claim range: [{args.claim_min:,}, {args.claim_max:,}]")
-    log(f"  Bet ID: {args.bet_id} ({'40000' if args.bet_id == 10 else str(args.bet_id)} xu)")
+    log(f"  Runtime: {args.runtime}s ({args.runtime//60} min)")
     log(f"{'='*60}")
+
+    deadline = time.time() + args.runtime
+    cycle = 0
+    total_surrendered = 0
+    total_claimed = 0
 
     async with websockets.connect(ws_url, ping_interval=None, max_size=2**20, open_timeout=15) as ws:
         bot = WSBot(ws)
-
-        # Login + enter lobby
         await bot.login_replay(login_frames)
         await bot.enter_lobby()
         await bot.read_balance()
         log(f"\nInitial balance: {bot.balance:,}")
 
-        # Phase 1: CLAIM
-        claims_ok, total_claimed = await bot.claim_until_threshold(
-            args.claim_min, args.claim_max, args.max_claims)
+        while time.time() < deadline:
+            cycle += 1
+            log(f"\n{'='*40} CYCLE {cycle} {'='*40}")
 
-        if bot.balance < 1000:
-            log(f"\n[SKIP] Balance too low for surrender")
-            return
-
-        # Phase 2: FIND TARGET + JOIN + SURRENDER
-        log(f"\n--- PHASE 2: FIND TARGET ---")
-        table_id = await bot.find_target_table(args.target_name, args.target_id)
-
-        if table_id:
-            joined = await bot.join_table(table_id)
-            if joined:
-                success, lost = await bot.ready_wait_surrender(max_wait=60)
+            # Phase 1: CLAIM until ≥ claim_min
+            if bot.balance < args.claim_min:
+                log(f"\n[Phase 1] Claim until {args.claim_min:,} xu...")
+                claims_ok, claimed = await bot.claim_until_threshold(
+                    args.claim_min, args.claim_max, args.max_claims)
+                total_claimed += claimed
             else:
-                log(f"  Join failed — creating own table")
-                created = await bot.create_table(bet_amt_id=args.bet_id)
-                success, lost = (await bot.ready_wait_surrender(max_wait=60)) if created else (False, 0)
-        else:
-            # Fallback: create own table
-            log(f"  Target not found — creating own table")
-            created = await bot.create_table(bet_amt_id=args.bet_id)
-            success, lost = (await bot.ready_wait_surrender(max_wait=60)) if created else (False, 0)
+                log(f"\n[Phase 1] Balance {bot.balance:,} ≥ {args.claim_min:,} — skip claim")
+                claims_ok = 0
 
-        # Summary
-        log(f"\n{'='*60}")
-        log(f"FINAL SUMMARY")
-        log(f"{'='*60}")
-        log(f"  Claims: {claims_ok} OK, +{total_claimed:,} xu")
-        log(f"  Balance: {bot.balance:,}")
-        log(f"  Target found: {'✓ table ' + str(table_id) if table_id else '✗'}")
-        log(f"  Surrender: {'✓' if success else '✗'}, lost={lost:,} xu")
+            if bot.balance < args.claim_min:
+                log(f"[STOP] Can't claim enough xu (balance {bot.balance:,} < {args.claim_min:,})")
+                break
+
+            # Phase 2: FIND TARGET
+            log(f"\n[Phase 2] Find target '{args.target_name}'...")
+            table_id = await bot.find_target_table(args.target_name, args.target_id)
+
+            if not table_id:
+                log(f"  Target not found — waiting 30s then retry...")
+                await asyncio.sleep(30)
+                continue
+
+            # Phase 3: JOIN TABLE
+            log(f"\n[Phase 3] Join table {table_id}...")
+            joined = await bot.join_table(table_id)
+            if not joined:
+                log(f"  Join failed — retry next cycle")
+                await asyncio.sleep(10)
+                continue
+
+            # Phase 4: SURRENDER (with seated/spectating detection)
+            log(f"\n[Phase 4] Surrender...")
+            status, lost = await bot.ready_wait_surrender(max_wait=120)
+
+            if status == "surrendered":
+                total_surrendered += lost
+                log(f"\n  ✓ Cycle {cycle} done: surrendered {lost:,} xu")
+            elif status == "spectating":
+                log(f"\n  Was spectating — retry join after GAMEOVER...")
+                # Re-join the same table
+                await asyncio.sleep(3)
+                joined2 = await bot.join_table(table_id)
+                if joined2:
+                    status2, lost2 = await bot.ready_wait_surrender(max_wait=120)
+                    if status2 == "surrendered":
+                        total_surrendered += lost2
+                        log(f"\n  ✓ Cycle {cycle} retry: surrendered {lost2:,} xu")
+            elif status == "timeout":
+                log(f"\n  Timeout — next cycle")
+
+            # Check runtime
+            remaining = deadline - time.time()
+            if remaining < 30:
+                log(f"\n[Runtime ending] {remaining:.0f}s left — stopping")
+                break
+
+            # Brief pause between cycles
+            log(f"\n  Next cycle in 5s... ({remaining:.0f}s remaining)")
+            await asyncio.sleep(5)
+
+    log(f"\n{'='*60}")
+    log(f"FINAL SUMMARY")
+    log(f"{'='*60}")
+    log(f"  Cycles: {cycle}")
+    log(f"  Total claimed: {total_claimed:,} xu")
+    log(f"  Total surrendered: {total_surrendered:,} xu")
+    log(f"  Final balance: {bot.balance:,}")
+    log(f"  Runtime: {(time.time() - (deadline - args.runtime)):.0f}s")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -28,15 +28,15 @@ permissions:
 
 concurrency:
   group: ws-bot
-  cancel-in-progress: true
+  cancel-in-progress: false  # KHÔNG cancel — để bot chạy xong
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 35  # 35 min (runtime 30 min + buffer)
     strategy:
       fail-fast: false
-      max-parallel: 5
+      max-parallel: 1  # CHỈ 1 BOT CÙNG LÚC — tránh conflict bàn target
       matrix:
         cookie: [ck1, ck2, ck3, ck5, ck6, ck10, ck11, ck12, ck13]
     steps:
@@ -69,6 +69,7 @@ jobs:
           CLAIM_MIN: ${{ inputs.claim_min || '40000' }}
           BET_ID: ${{ inputs.bet_id || '10' }}
           MAX_CLAIMS: '30'
+          RUNTIME_SECONDS: '1800'
         run: |
           echo "=== Running WS bot for ${{ matrix.cookie }} ==="
           echo "Target: $TARGET_NAME (id=$TARGET_ID)"
