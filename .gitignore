@@ -7,7 +7,9 @@
 *.txt.old
 
 # Local state / fingerprint dirs
-state/
+# state/ được ignore NHƯNG state/tokens/ PHẢI được commit (token files cho ws_bot)
+state/*
+!state/tokens/
 fingerprints/
 transfer_dests.json
 

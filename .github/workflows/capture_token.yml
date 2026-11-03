@@ -64,10 +64,15 @@ jobs:
         run: |
           git config user.name "jieqi-bot"
           git config user.email "actions@github.com"
-          git add state/tokens/*.json 2>/dev/null || true
+          git add -f state/tokens/${{ matrix.cookie }}_token.json 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "No token changes"
+            echo "No token changes for ${{ matrix.cookie }}"
           else
             git commit -m "Update token: ${{ matrix.cookie }}"
-            git push
+            # Pull-rebase để tránh conflict khi nhiều matrix job push cùng lúc
+            for i in 1 2 3; do
+              git pull --rebase origin main && git push && break
+              echo "Push attempt $i failed, retrying..."
+              sleep 5
+            done
           fi
