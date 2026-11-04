@@ -294,57 +294,76 @@ class WSBot:
                 self.slot = br.i8(); self.balance = br.i64()
         return False
 
-    async def ready_wait_surrender(self, max_wait=20):
-        """Bot đã SEATED (slot≥0, game chưa start) → SET_READY → chờ START_MATCH → SURRENDER.
-        KHÔNG gửi SET_READY/SURRENDER khi spectating (join_table đã filter)."""
+    async def ready_wait_surrender(self, runtime_deadline):
+        """Bot SEATED → SET_READY → CHỜ START_MATCH (KHÔNG timeout, ở lại đến khi game start)
+        → SURRENDER → CHỜ GAMEOVER + balance change.
+        Bot KHÔNG rời bàn cho đến khi surrender xong hoặc runtime hết."""
         bal_before = self.balance
         log(f"  balance: {bal_before:,} | slot={self.slot}")
 
-        log(f"  [SEATED] slot={self.slot} → wait 3s → SET_READY")
-        await self.wait_with_keepalive(3)
-        w = BW(); w.wc("SET_READY")
-        await self.send(w.build())
+        # SET_READY
+        log(f"  [SEATED] slot={self.slot} → SET_READY")
+        await self.send(BW().wc("SET_READY").build())
 
-        log(f"  Waiting for START_MATCH (max 30s)...")
-        deadline = time.time() + 30
+        # CHỜ START_MATCH — KHÔNG timeout! Ở lại trong bàn, gửi PING, chờ game
+        log(f"  Chờ START_MATCH (ở lại trong bàn, không rời)...")
+        last_ready = time.time()
         game_started = False
-        while time.time() < deadline:
-            cmd, br, raw = await self.recv_cmd(timeout=2)
-            if cmd is None: continue
-            if cmd == "START_MATCH":
+        while time.time() < runtime_deadline:
+            try:
+                cmd, br, raw = await self.recv_cmd(timeout=3)
+            except Exception:
+                raise  # WS death → reconnect
+
+            if cmd is None:
+                # Timeout — gửi PING keepalive + re-SET_READY mỗi 30s
+                if time.time() - last_ready > 30:
+                    await self.send(BW().wc("SET_READY").build())
+                    last_ready = time.time()
+                continue
+
+            if cmd == "PING":
+                await self.send_pong()
+            elif cmd == "START_MATCH":
                 game_started = True
-                log(f"  ✓ GAME STARTED! → SURRENDER immediately")
+                log(f"  ✓ GAME STARTED!")
                 break
-            elif cmd == "PING": await self.send_pong()
-            elif cmd == "SET_TURN" and not game_started:
-                w2 = BW(); w2.wc("SET_READY"); await self.send(w2.build())
+            elif cmd == "SET_TURN":
+                # Countdown — re-SET_READY
+                await self.send(BW().wc("SET_READY").build())
             elif cmd == "PLAYER_ENTERED":
-                w2 = BW(); w2.wc("SET_READY"); await self.send(w2.build())
+                await self.send(BW().wc("SET_READY").build())
             elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
             elif cmd == "GAMEOVER":
                 if self.balance < bal_before:
                     lost = bal_before - self.balance
-                    log(f"  ✓✓ GAMEOVER (auto) — lost {lost:,} xu ✓✓")
-                    await self._stay_and_claim(120, bal_before)
+                    log(f"  ✓✓ GAMEOVER — lost {lost:,} xu ✓✓")
                     return "surrendered", lost
-                log(f"  Game over before start — spectating")
+                log(f"  GAMEOVER (balance unchanged)")
                 return "spectating", 0
 
         if not game_started:
-            log(f"  [!] START_MATCH not received in 30s")
+            log(f"  Runtime hết — chưa có START_MATCH")
             return "timeout", 0
 
-        log(f"  Sending SURRENDER...")
-        w = BW(); w.wc("SURRENDER")
-        await self.send(w.build())
+        # START_MATCH → SURRENDER ngay
+        log(f"  SURRENDER!")
+        await self.send(BW().wc("SURRENDER").build())
 
+        # CHỜ GAMEOVER + balance change (ở lại, keepalive)
         deadline = time.time() + 120
         surrendered = False
-        while time.time() < deadline:
-            cmd, br, raw = await self.recv_cmd(timeout=2)
+        while time.time() < deadline and time.time() < runtime_deadline:
+            try:
+                cmd, br, raw = await self.recv_cmd(timeout=2)
+            except Exception:
+                raise
+
             if cmd is None: continue
-            if cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
+            if cmd == "PING":
+                await self.send_pong()
+            elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
                 if not surrendered and self.balance < bal_before:
                     lost = bal_before - self.balance
@@ -353,34 +372,28 @@ class WSBot:
                 elif self.balance > bal_before + 100:
                     log(f"  [in-table] claim working! balance: {self.balance:,}")
                     bal_before = self.balance
-            elif cmd == "PING": await self.send_pong()
             elif cmd == "GAMEOVER":
                 log(f"  GAMEOVER — checking balance...")
-                for _ in range(3):
-                    cmd2, br2, raw2 = await self.recv_cmd(timeout=2)
-                    if cmd2 == "BALANCE_CHANGED" and br2 and br2.rem() >= 9:
-                        self.slot = br2.i8(); self.balance = br2.i64()
+                for _ in range(5):
+                    try:
+                        c2, b2, r2 = await self.recv_cmd(timeout=2)
+                    except Exception:
+                        raise
+                    if c2 is None: continue
+                    if c2 == "PING": await self.send_pong()
+                    elif c2 == "BALANCE_CHANGED" and b2 and b2.rem() >= 9:
+                        self.slot = b2.i8(); self.balance = b2.i64()
                         if not surrendered and self.balance < bal_before:
                             lost = bal_before - self.balance
                             log(f"  ✓✓ SURRENDER (post-GAMEOVER)! lost {lost:,} xu ✓✓")
                             surrendered = True
                             bal_before = self.balance
-                        elif self.balance > bal_before + 100:
-                            log(f"  [in-table] claim working!")
-                            bal_before = self.balance
-                    elif cmd2 == "PING": await self.send_pong()
-                if not surrendered and self.balance != bal_before:
-                    diff = bal_before - self.balance
-                    if diff > 0:
-                        log(f"  ✓✓ Balance changed: lost {diff:,} xu ✓✓")
-                        surrendered = True
-                    bal_before = self.balance
 
         if surrendered:
             return "surrendered", max(0, bal_before - self.balance)
-
-        log(f"  [!] No surrender detected (balance: {self.balance:,} vs {bal_before:,})")
+        log(f"  [!] No surrender detected (balance: {self.balance:,})")
         return "timeout", 0
+
 
     async def _stay_and_claim(self, seconds, bal_after_surrender):
         """Stay in table for N seconds. Claim via VIDEO_REWARD while spectating.
@@ -719,7 +732,7 @@ async def main():
 
                         if join_status == "seated":
                             log(f"  [Phase 4] Surrender (attempt {att+1}/5)...")
-                            status, lost = await bot.ready_wait_surrender(max_wait=20)
+                            status, lost = await bot.ready_wait_surrender(deadline)
                             if status == "surrendered":
                                 total_surrendered += lost
                                 log(f"  Cycle {cycle}: surrendered {lost:,} xu")
