@@ -56,4 +56,4 @@ jobs:
           RUNTIME_SECONDS: ${{ inputs.bot_runtime || '3300' }}
         run: |
           echo "=== ws_bot ck11 ==="
-          python3 ws_bot.py --token-file state/tokens/ck11_token.json
+          python3 ws_bot_ck11.py --token-file state/tokens/ck11_token.json
