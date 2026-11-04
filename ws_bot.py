@@ -579,24 +579,36 @@ async def main():
                 continue
 
             # Phase 4: SURRENDER (with seated/spectating detection)
-            log(f"\n[Phase 4] Surrender...")
-            status, lost = await bot.ready_wait_surrender(max_wait=120)
+            # Loop: if spectating → wait GAMEOVER → retry join → until seated or timeout
+            surrender_done = False
+            for attempt in range(5):  # max 5 attempts to get seated
+                log(f"\n[Phase 4] Surrender (attempt {attempt+1}/5)...")
+                status, lost = await bot.ready_wait_surrender(max_wait=120)
 
-            if status == "surrendered":
-                total_surrendered += lost
-                log(f"\n  ✓ Cycle {cycle} done: surrendered {lost:,} xu")
-            elif status == "spectating":
-                log(f"\n  Was spectating — retry join after GAMEOVER...")
-                # Re-join the same table
-                await asyncio.sleep(3)
-                joined2 = await bot.join_table(table_id)
-                if joined2:
-                    status2, lost2 = await bot.ready_wait_surrender(max_wait=120)
-                    if status2 == "surrendered":
-                        total_surrendered += lost2
-                        log(f"\n  ✓ Cycle {cycle} retry: surrendered {lost2:,} xu")
-            elif status == "timeout":
-                log(f"\n  Timeout — next cycle")
+                if status == "surrendered":
+                    total_surrendered += lost
+                    log(f"\n  ✓ Cycle {cycle} done: surrendered {lost:,} xu")
+                    surrender_done = True
+                    break
+                elif status == "spectating":
+                    log(f"\n  [Spectating] Table full — wait GAMEOVER then retry join...")
+                    await asyncio.sleep(3)
+                    joined2 = await bot.join_table(table_id)
+                    if not joined2:
+                        log(f"  Re-join failed — retry next cycle")
+                        break
+                    # Loop back to ready_wait_surrender with new seat
+                elif status == "timeout":
+                    log(f"\n  Timeout — retry join...")
+                    await asyncio.sleep(5)
+                    joined2 = await bot.join_table(table_id)
+                    if not joined2:
+                        log(f"  Re-join failed — next cycle")
+                        break
+                # Continue loop to try again
+
+            if not surrender_done:
+                log(f"\n  Could not surrender this cycle — next cycle")
 
             # Check runtime
             remaining = deadline - time.time()

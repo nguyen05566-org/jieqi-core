@@ -8,7 +8,7 @@ on:
         required: false
         default: 'nguyen123456'
       target_id:
-        description: 'Target player ID (e.g. 68982512)'
+        description: 'Target player ID'
         required: false
         default: '68982512'
       claim_min:
@@ -18,15 +18,15 @@ on:
       claim_max:
         description: 'Max balance — game blocks claim above this (xu)'
         required: false
-        default: '55000'
+        default: '50000'
       bet_id:
-        description: 'Bet amount ID (5=1000, 7=4000, 10=40000)'
+        description: 'Bet amount ID (10=40000)'
         required: false
         default: '10'
       bot_runtime:
-        description: 'Runtime per bot in seconds (default 300 = 5 min)'
+        description: 'Runtime per bot in seconds (default 3300 = 55 min)'
         required: false
-        default: '300'
+        default: '3300'
   schedule:
     - cron: '0 * * * *'  # mỗi 1 giờ
 
@@ -35,13 +35,18 @@ permissions:
   actions: write
 
 concurrency:
-  group: ws-bot
-  cancel-in-progress: false
+  group: ws-bot-${{ github.workflow }}
+  cancel-in-progress: false  # KHÔNG cancel — để bot chạy xong
 
 jobs:
-  run-bots:
+  run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 80  # 11 bots × (5+1) min = 66 min + buffer
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 11  # TẤT CẢ CHẠY ĐỒNG THỜI
+      matrix:
+        cookie: [ck1, ck2, ck3, ck5, ck6, ck8, ck9, ck10, ck11, ck12, ck13]
     steps:
       - uses: actions/checkout@v4
 
@@ -53,33 +58,31 @@ jobs:
       - name: Install dependencies
         run: pip install websockets
 
-      - name: Run bots sequentially (1 min apart)
+      - name: Check token file exists
+        id: check
+        run: |
+          if [ ! -f state/tokens/${{ matrix.cookie }}_token.json ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+          else
+            echo "exists=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run WS bot (parallel, unlimited cycles)
+        if: steps.check.outputs.exists == 'true'
         env:
           TARGET_NAME: ${{ inputs.target_name || 'nguyen123456' }}
           TARGET_ID: ${{ inputs.target_id || '68982512' }}
           CLAIM_MIN: ${{ inputs.claim_min || '40000' }}
-          CLAIM_MAX: ${{ inputs.claim_max || '55000' }}
+          CLAIM_MAX: ${{ inputs.claim_max || '50000' }}
           BET_ID: ${{ inputs.bet_id || '10' }}
           MAX_CLAIMS: '100'
-          RUNTIME_SECONDS: ${{ inputs.bot_runtime || '300' }}
+          RUNTIME_SECONDS: ${{ inputs.bot_runtime || '3300' }}
         run: |
-          echo "=== WS Bot — sequential (1 min apart) ==="
+          echo "=== [$(date '+%H:%M:%S')] Running ${{ matrix.cookie }} (parallel) ==="
           echo "Target: $TARGET_NAME (id=$TARGET_ID)"
-          echo "Claim range: [$CLAIM_MIN, $CLAIM_MAX]"
-          echo "Bot runtime: $RUNTIME_SECONDS s"
-          echo ""
+          echo "Runtime: $RUNTIME_SECONDS s ($(( RUNTIME_SECONDS / 60 )) min)"
+          python3 ws_bot.py --token-file state/tokens/${{ matrix.cookie }}_token.json
 
-          for cookie in ck1 ck2 ck3 ck5 ck6 ck8 ck9 ck10 ck11 ck12 ck13; do
-            if [ -f state/tokens/${cookie}_token.json ]; then
-              echo "=== [$(date '+%H:%M:%S')] Running $cookie ==="
-              python3 ws_bot.py --token-file state/tokens/${cookie}_token.json || true
-              echo "=== [$(date '+%H:%M:%S')] $cookie done ==="
-              echo "--- Waiting 60s before next bot ---"
-              sleep 60
-            else
-              echo "=== Skip $cookie (no token file) ==="
-            fi
-          done
-
-          echo ""
-          echo "=== All bots done ==="
+      - name: Skip (no token)
+        if: steps.check.outputs.exists != 'true'
+        run: echo "No token file for ${{ matrix.cookie }} — skipping"
