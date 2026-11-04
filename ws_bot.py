@@ -567,8 +567,13 @@ async def main():
                     args.claim_min, args.claim_max, args.max_claims)
                 total_claimed += claimed
 
-            # ALWAYS proceed to surrender (even if claim blocked or balance = 0)
-            # If token is dead, surrender will also fail → bot stops naturally
+            # ALWAYS proceed to surrender — BUT only if balance ≥ claim_min
+            # (if balance too low, surrender won't transfer meaningful xu)
+            if 0 < bot.balance < args.claim_min:
+                log(f"\n[SKIP] Balance {bot.balance:,} < {args.claim_min:,} — can't surrender meaningful amount")
+                log(f"  VIDEO_REWARD likely exhausted for today — wait 60s, retry")
+                await asyncio.sleep(60)
+                continue
 
             # Phase 2: FIND TARGET (retry scan 3 times)
             log(f"\n[Phase 2] Find target '{args.target_name}'...")
