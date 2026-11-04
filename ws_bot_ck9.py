@@ -86,24 +86,53 @@ class WSBot:
         self.slot = -1
 
     async def send(self, data):
-        try: await self.ws.send(data)
-        except Exception: pass  # connection closed — ignore
+        await self.ws.send(data)  # let exception propagate → reconnect
 
     async def recv_cmd(self, timeout=3):
-        """Receive one frame, return (cmd_name, reader, raw_bytes). None on timeout/error."""
-        try:
-            r = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
-            if isinstance(r, bytes):
-                br = BR(r)
-                cmd = br.rc()
-                return cmd, br, r
-        except (asyncio.TimeoutError, Exception):
-            pass
+        """Receive one frame. Returns (cmd, reader, raw) or (None,None,None) on timeout.
+        Raises exception on connection closed (for reconnect)."""
+        r = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
+        if isinstance(r, bytes):
+            br = BR(r)
+            cmd = br.rc()
+            return cmd, br, r
         return None, None, None
 
+    async def keepalive_ping(self):
+        """Send PING to keep WS alive. Call periodically."""
+        try:
+            w = BW(); w.wc("PING")
+            await self.ws.send(w.build())
+        except Exception:
+            raise  # connection dead → reconnect
+
+    async def wait_with_keepalive(self, seconds):
+        """Sleep for N seconds while handling PING/PONG. 
+        Sends PING every 15s. Raises on connection death."""
+        deadline = time.time() + seconds
+        last_ping = 0
+        while time.time() < deadline:
+            remaining = min(deadline - time.time(), 3)
+            try:
+                cmd, br, raw = await self.recv_cmd(timeout=max(0.5, remaining))
+            except asyncio.TimeoutError:
+                cmd = None
+            # Send PING every 15s
+            if time.time() - last_ping > 15:
+                await self.keepalive_ping()
+                last_ping = time.time()
+            if cmd is not None:
+                if cmd == "PING":
+                    try: await self.send(BW().wc("PONG").build())
+                    except: raise
+                elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
+                    self.slot = br.i8(); self.balance = br.i64()
+                # Return the command for caller to process
+                return cmd, br, raw
+        return None, None, None  # timeout
+
     async def send_pong(self):
-        try: await self.ws.send(BW().wc("PONG").build())
-        except Exception: pass
+        await self.ws.send(BW().wc("PONG").build())  # raise on death
 
     async def drain(self, seconds=2):
         """Drain pending messages for N seconds, handling PING."""
@@ -264,7 +293,7 @@ class WSBot:
         log(f"  balance: {bal_before:,} | slot={self.slot}")
 
         log(f"  [SEATED] slot={self.slot} → wait 3s → SET_READY")
-        await asyncio.sleep(3)
+        await self.wait_with_keepalive(3)
         w = BW(); w.wc("SET_READY")
         await self.send(w.build())
 
@@ -494,7 +523,7 @@ class WSBot:
 
         # Wait 5s for table state to settle
         log(f"  Waiting 5s for table state...")
-        await asyncio.sleep(5)
+        await self.wait_with_keepalive(5)
 
         # GET_TABLE_DATA_EX → parse slot + is_playing
         gw = BW(); gw.wc("GET_TABLE_DATA_EX"); gw.wa("")
@@ -672,7 +701,7 @@ async def main():
                             if not got_event:
                                 log(f"  No event in 120s -> next cycle")
                                 break
-                            await asyncio.sleep(3)
+                            await self.wait_with_keepalive(3)
                             join_status = await bot.join_table(table_id)
                             if join_status == "seated":
                                 log(f"  Got seat after wait!")
@@ -693,7 +722,7 @@ async def main():
                                 continue
                             elif status == "timeout":
                                 log(f"  Timeout -> re-join")
-                                await asyncio.sleep(5)
+                                await self.wait_with_keepalive(5)
                                 join_status = await bot.join_table(table_id)
                                 if not join_status: break
 
@@ -707,13 +736,13 @@ async def main():
                     if remaining < 30:
                         log(f"\n[Runtime] {remaining:.0f}s left — stopping")
                         break
-                    await asyncio.sleep(5)
+                    await self.wait_with_keepalive(5)
 
         except Exception as e:
             reconnect_count += 1
             log(f"\n[WS ERROR] {type(e).__name__}: {e} → reconnect {reconnect_count}/{MAX_RECONNECTS}")
             if reconnect_count < MAX_RECONNECTS:
-                await asyncio.sleep(5)
+                await self.wait_with_keepalive(5)
 
     log(f"\n{'='*60}")
     log(f"FINAL SUMMARY")
