@@ -189,10 +189,14 @@ class WSBot:
         claims_fail = 0
         consec_fail = 0
         total_claimed = 0
+        video_reward_blocked = False
 
         for i in range(max_claims):
-            if self.balance >= claim_min:
-                log(f"  [t={i}] balance {self.balance:,} >= {claim_min:,} ✓ stopping")
+            if self.balance >= claim_max:
+                log(f"  [t={i}] balance {self.balance:,} >= {claim_max:,} ✓ claim max reached")
+                break
+            if self.balance >= claim_min and video_reward_blocked:
+                log(f"  [t={i}] VIDEO_REWARD blocked + balance {self.balance:,} >= {claim_min:,} → proceed to surrender")
                 break
 
             got_resp, amount = await self.claim_once()
@@ -206,16 +210,24 @@ class WSBot:
                 claims_fail += 1
                 consec_fail += 1
                 err = "no response" if not got_resp else "no balance change"
-                log(f"  [t={i}] ✗ claim FAIL ({err}) | consec={consec_fail}")
+                log(f"  [t={i}] ✗ claim FAIL ({err}) | consec={consec_fail} | balance: {self.balance:,}")
                 if not got_resp:
-                    log(f"  [stop] server rejected VIDEO_REWARD")
-                    break
+                    # VIDEO_REWARD blocked by server (balance too high or cooldown)
+                    video_reward_blocked = True
+                    if self.balance >= claim_min:
+                        log(f"  [stop] VIDEO_REWARD blocked, balance {self.balance:,} >= {claim_min:,} → go surrender!")
+                        break
+                    else:
+                        # Balance too low but claims blocked — wait 30s and retry
+                        log(f"  [wait] VIDEO_REWARD blocked, balance {self.balance:,} < {claim_min:,} → wait 30s, retry")
+                        await asyncio.sleep(30)
+                        consec_fail = 0  # reset, don't stop on temporary block
+                        continue
                 if consec_fail >= 6:
                     log(f"  [stop] 6 consecutive failures")
                     break
 
-            # Cooldown: 10s + jitter (server requires ~10s between claims)
-            # (auto_cycle.py uses 3s + JS overhead ~6s = ~10s effective)
+            # Cooldown: 10s + jitter
             jitter = random.uniform(0.5, 1.5)
             cooldown = 10.0 + jitter
             await asyncio.sleep(cooldown)
