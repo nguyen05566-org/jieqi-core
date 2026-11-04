@@ -138,10 +138,15 @@ class WSBot:
         """Drain pending messages for N seconds, handling PING."""
         deadline = time.time() + seconds
         while time.time() < deadline:
-            cmd, br, raw = await self.recv_cmd(timeout=1)
+            try:
+                cmd, br, raw = await self.recv_cmd(timeout=1)
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                raise  # connection death
             if cmd is None: break
             if cmd == "PING": await self.send_pong()
-            elif cmd == "BALANCE_CHANGED" and br.rem() >= 9:
+            elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
 
     async def login_replay(self, frames):
@@ -701,7 +706,7 @@ async def main():
                             if not got_event:
                                 log(f"  No event in 120s -> next cycle")
                                 break
-                            await self.wait_with_keepalive(3)
+                            await bot.wait_with_keepalive(3)
                             join_status = await bot.join_table(table_id)
                             if join_status == "seated":
                                 log(f"  Got seat after wait!")
@@ -722,7 +727,7 @@ async def main():
                                 continue
                             elif status == "timeout":
                                 log(f"  Timeout -> re-join")
-                                await self.wait_with_keepalive(5)
+                                await bot.wait_with_keepalive(5)
                                 join_status = await bot.join_table(table_id)
                                 if not join_status: break
 
@@ -736,13 +741,13 @@ async def main():
                     if remaining < 30:
                         log(f"\n[Runtime] {remaining:.0f}s left — stopping")
                         break
-                    await self.wait_with_keepalive(5)
+                    await bot.wait_with_keepalive(5)
 
         except Exception as e:
             reconnect_count += 1
             log(f"\n[WS ERROR] {type(e).__name__}: {e} → reconnect {reconnect_count}/{MAX_RECONNECTS}")
             if reconnect_count < MAX_RECONNECTS:
-                await self.wait_with_keepalive(5)
+                await bot.wait_with_keepalive(5)
 
     log(f"\n{'='*60}")
     log(f"FINAL SUMMARY")
