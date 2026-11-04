@@ -383,7 +383,7 @@ class WSBot:
 
     async def _stay_and_claim(self, seconds, bal_after_surrender):
         """Stay in table for N seconds. Claim via VIDEO_REWARD while spectating.
-        Log balance changes."""
+        CRITICAL: handle PING during sleep — server closes connection if PONG not sent!"""
         log(f"  [stay] Staying in table {seconds}s — claim while spectating...")
         deadline = time.time() + seconds
         last_bal = self.balance
@@ -392,7 +392,7 @@ class WSBot:
             vr = struct.pack('b', -12) + b"VIDEO_REWARD" + struct.pack('B', 1)
             await self.send(vr)
             
-            # Wait for responses (3s window)
+            # Wait for responses (3s window) — handle PING
             resp_deadline = time.time() + 3
             while time.time() < resp_deadline:
                 cmd, br, raw = await self.recv_cmd(timeout=1)
@@ -403,13 +403,20 @@ class WSBot:
                         log(f"  [stay] claim +{self.balance - last_bal} | balance: {self.balance:,}")
                         last_bal = self.balance
                 elif cmd == "PING": await self.send_pong()
-                elif cmd == "VIDEO_REWARD":
-                    pass  # claim response
+                elif cmd == "VIDEO_REWARD": pass
             
-            # Wait 10s before next claim
+            # Wait 10s before next claim — MUST handle PING during sleep!
             remaining = deadline - time.time()
             if remaining < 12: break
-            await asyncio.sleep(10)
+            sleep_end = time.time() + 10
+            while time.time() < sleep_end:
+                cmd, br, raw = await self.recv_cmd(timeout=2)
+                if cmd == "PING": await self.send_pong()
+                elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
+                    self.slot = br.i8(); self.balance = br.i64()
+                    if self.balance > last_bal:
+                        log(f"  [stay] claim +{self.balance - last_bal} | balance: {self.balance:,}")
+                        last_bal = self.balance
         
         log(f"  [stay] done — balance: {self.balance:,} (was {bal_after_surrender:,})")
 
@@ -595,112 +602,101 @@ async def main():
     cycle = 0
     total_surrendered = 0
     total_claimed = 0
+    reconnect_count = 0
+    MAX_RECONNECTS = 3
 
-    async with websockets.connect(ws_url, ping_interval=None, max_size=2**20, open_timeout=15) as ws:
-        bot = WSBot(ws)
-        await bot.login_replay(login_frames)
-        await bot.enter_lobby()
-        await bot.read_balance()
-        log(f"\nInitial balance: {bot.balance:,}")
+    # Outer loop: reconnect if WS dies
+    while time.time() < deadline and reconnect_count < MAX_RECONNECTS:
+        try:
+            async with websockets.connect(ws_url, ping_interval=None, max_size=2**20, open_timeout=15) as ws:
+                bot = WSBot(ws)
+                await bot.login_replay(login_frames)
+                await bot.enter_lobby()
+                await bot.read_balance()
+                log(f"\nBalance: {bot.balance:,} (reconnects: {reconnect_count})")
+                reconnect_count = 0
 
-        while time.time() < deadline:
-            cycle += 1
-            log(f"\n{'='*40} CYCLE {cycle} {'='*40}")
+                while time.time() < deadline:
+                    cycle += 1
+                    log(f"\n{'='*40} CYCLE {cycle} {'='*40}")
 
-            # Phase 1: CLAIM (if balance readable and < claim_max)
-            if 0 < bot.balance < args.claim_min:
-                log(f"\n[Phase 1] Claim until {args.claim_min:,} xu...")
-                claims_ok, claimed = await bot.claim_until_threshold(
-                    args.claim_min, args.claim_max, args.max_claims)
-                total_claimed += claimed
-            elif bot.balance >= args.claim_min:
-                log(f"\n[Phase 1] Balance {bot.balance:,} ≥ {args.claim_min:,} — skip claim, go surrender")
-            else:
-                # Balance = 0 (not read) — try claim once, if blocked go surrender
-                log(f"\n[Phase 1] Balance unknown — try claim...")
-                claims_ok, claimed = await bot.claim_until_threshold(
-                    args.claim_min, args.claim_max, args.max_claims)
-                total_claimed += claimed
+                    # Phase 1: CLAIM
+                    if 0 < bot.balance < args.claim_min:
+                        log(f"\n[Phase 1] Claim until {args.claim_min:,} xu...")
+                        claims_ok, claimed = await bot.claim_until_threshold(
+                            args.claim_min, args.claim_max, args.max_claims)
+                        total_claimed += claimed
+                    elif bot.balance >= args.claim_min:
+                        log(f"\n[Phase 1] Balance {bot.balance:,} ≥ {args.claim_min:,} — go surrender")
+                    else:
+                        log(f"\n[Phase 1] Balance unknown — try claim...")
+                        claims_ok, claimed = await bot.claim_until_threshold(
+                            args.claim_min, args.claim_max, args.max_claims)
+                        total_claimed += claimed
 
-            # ALWAYS proceed to surrender — BUT only if balance ≥ claim_min
-            # (if balance too low, surrender won't transfer meaningful xu)
-            if 0 < bot.balance < args.claim_min:
-                log(f"\n[SKIP] Balance {bot.balance:,} < {args.claim_min:,} — can't surrender meaningful amount")
-                log(f"  VIDEO_REWARD likely exhausted for today — wait 60s, retry")
-                await asyncio.sleep(60)
-                continue
+                    # WS dead detection: balance < claim_min AND VIDEO_REWARD blocked
+                    if 0 < bot.balance < args.claim_min:
+                        log(f"\n[RECONNECT] Balance {bot.balance:,} < {args.claim_min:,}, claim blocked → WS dead?")
+                        reconnect_count += 1
+                        break  # exit inner loop → outer reconnects
 
-            # Phase 2: FIND TARGET (retry scan 3 times)
-            log(f"\n[Phase 2] Find target '{args.target_name}'...")
-            table_id = None
-            for scan_attempt in range(3):
-                table_id = await bot.find_target_table(args.target_name, args.target_id)
-                if table_id:
-                    break
-                if scan_attempt < 2:
-                    log(f"  Retry scan in 20s... ({scan_attempt+1}/3)")
-                    await asyncio.sleep(20)
+                    # Phase 2: FIND TARGET
+                    log(f"\n[Phase 2] Find target '{args.target_name}'...")
+                    table_id = None
+                    for sa in range(3):
+                        table_id = await bot.find_target_table(args.target_name, args.target_id)
+                        if table_id: break
+                        if sa < 2:
+                            log(f"  Retry scan in 20s... ({sa+1}/3)")
+                            await asyncio.sleep(20)
+                    if not table_id:
+                        log(f"  Target not found — next cycle")
+                        await asyncio.sleep(15)
+                        continue
 
-            if not table_id:
-                log(f"  Target not found after 3 scans — next cycle")
-                await asyncio.sleep(15)
-                continue
+                    # Phase 3: JOIN
+                    log(f"\n[Phase 3] Join table {table_id}...")
+                    joined = await bot.join_table(table_id)
+                    if not joined:
+                        log(f"  Join failed — next cycle")
+                        await asyncio.sleep(10)
+                        continue
 
-            # Phase 3: JOIN TABLE
-            log(f"\n[Phase 3] Join table {table_id}...")
-            joined = await bot.join_table(table_id)
-            if not joined:
-                log(f"  Join failed — retry next cycle")
-                await asyncio.sleep(10)
-                continue
+                    # Phase 4: SURRENDER
+                    surrender_done = False
+                    for att in range(5):
+                        log(f"\n[Phase 4] Surrender (attempt {att+1}/5)...")
+                        status, lost = await bot.ready_wait_surrender(max_wait=20)
+                        if status == "surrendered":
+                            total_surrendered += lost
+                            log(f"\n  ✓ Cycle {cycle}: surrendered {lost:,} xu")
+                            surrender_done = True
+                            break
+                        elif status == "spectating":
+                            await asyncio.sleep(3)
+                            j2 = await bot.join_table(table_id)
+                            if not j2: break
+                        elif status == "timeout":
+                            await asyncio.sleep(5)
+                            j2 = await bot.join_table(table_id)
+                            if not j2: break
 
-            # Phase 4: SURRENDER (with seated/spectating detection)
-            # Loop: if spectating → wait GAMEOVER → retry join → until seated or timeout
-            surrender_done = False
-            for attempt in range(5):  # max 5 attempts to get seated
-                log(f"\n[Phase 4] Surrender (attempt {attempt+1}/5)...")
-                status, lost = await bot.ready_wait_surrender(max_wait=120)
+                    # Return to lobby
+                    ret = BW(); ret.wc("ENTER_PLACE"); ret.wa("Lobby.caro.0"); ret.wu(""); ret.i8(1)
+                    await bot.send(ret.build())
+                    await bot.drain(3)
 
-                if status == "surrendered":
-                    total_surrendered += lost
-                    log(f"\n  ✓ Cycle {cycle} done: surrendered {lost:,} xu")
-                    surrender_done = True
-                    break
-                elif status == "spectating":
-                    log(f"\n  [Spectating] Table full — wait GAMEOVER then retry join...")
-                    await asyncio.sleep(3)
-                    joined2 = await bot.join_table(table_id)
-                    if not joined2:
-                        log(f"  Re-join failed — retry next cycle")
+                    remaining = deadline - time.time()
+                    if remaining < 30:
+                        log(f"\n[Runtime] {remaining:.0f}s left — stopping")
                         break
-                    # Loop back to ready_wait_surrender with new seat
-                elif status == "timeout":
-                    log(f"\n  Timeout — retry join...")
                     await asyncio.sleep(5)
-                    joined2 = await bot.join_table(table_id)
-                    if not joined2:
-                        log(f"  Re-join failed — next cycle")
-                        break
-                # Continue loop to try again
 
-            if not surrender_done:
-                log(f"\n  Could not surrender this cycle — next cycle")
-
-            # Return to lobby after surrender (bot might still be in ended table)
-            log(f"\n  Return to lobby...")
-            ret = BW(); ret.wc("ENTER_PLACE"); ret.wa("Lobby.caro.0"); ret.wu(""); ret.i8(1)
-            await bot.send(ret.build())
-            await bot.drain(3)
-
-            # Check runtime
-            remaining = deadline - time.time()
-            if remaining < 30:
-                log(f"\n[Runtime ending] {remaining:.0f}s left — stopping")
-                break
-
-            # Brief pause between cycles
-            log(f"\n  Next cycle in 5s... ({remaining:.0f}s remaining)")
-            await asyncio.sleep(5)
+        except Exception as e:
+            reconnect_count += 1
+            log(f"\n[WS ERROR] {type(e).__name__}: {e} → reconnect {reconnect_count}/{MAX_RECONNECTS}")
+            if reconnect_count < MAX_RECONNECTS:
+                await asyncio.sleep(5)
 
     log(f"\n{'='*60}")
     log(f"FINAL SUMMARY")
@@ -708,8 +704,7 @@ async def main():
     log(f"  Cycles: {cycle}")
     log(f"  Total claimed: {total_claimed:,} xu")
     log(f"  Total surrendered: {total_surrendered:,} xu")
-    log(f"  Final balance: {bot.balance:,}")
-    log(f"  Runtime: {(time.time() - (deadline - args.runtime)):.0f}s")
+    log(f"  Reconnects: {reconnect_count}")
 
 if __name__ == "__main__":
     asyncio.run(main())
