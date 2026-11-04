@@ -464,7 +464,7 @@ async def main():
     parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "40000")))
     parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "55000")))
     parser.add_argument("--bet-id", type=int, default=int(os.environ.get("BET_ID", "10")))
-    parser.add_argument("--max-claims", type=int, default=int(os.environ.get("MAX_CLAIMS", "30")))
+    parser.add_argument("--max-claims", type=int, default=int(os.environ.get("MAX_CLAIMS", "100")))
     parser.add_argument("--runtime", type=int, default=int(os.environ.get("RUNTIME_SECONDS", "1800")),
                         help="Total runtime in seconds (default 1800 = 30 min)")
     args = parser.parse_args()

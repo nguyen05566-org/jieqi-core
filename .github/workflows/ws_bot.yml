@@ -68,7 +68,7 @@ jobs:
           TARGET_ID: ${{ inputs.target_id || '68982512' }}
           CLAIM_MIN: ${{ inputs.claim_min || '40000' }}
           BET_ID: ${{ inputs.bet_id || '10' }}
-          MAX_CLAIMS: '30'
+          MAX_CLAIMS: '100'
           RUNTIME_SECONDS: '1800'
         run: |
           echo "=== Running WS bot for ${{ matrix.cookie }} ==="
