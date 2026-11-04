@@ -41,7 +41,7 @@ concurrency:
 jobs:
   run-bots:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 80  # 11 bots × (5+1) min = 66 min + buffer
     steps:
       - uses: actions/checkout@v4
 
@@ -69,7 +69,7 @@ jobs:
           echo "Bot runtime: $RUNTIME_SECONDS s"
           echo ""
 
-          for cookie in ck1 ck2 ck3 ck5 ck6 ck10 ck11 ck12 ck13; do
+          for cookie in ck1 ck2 ck3 ck5 ck6 ck8 ck9 ck10 ck11 ck12 ck13; do
             if [ -f state/tokens/${cookie}_token.json ]; then
               echo "=== [$(date '+%H:%M:%S')] Running $cookie ==="
               python3 ws_bot.py --token-file state/tokens/${cookie}_token.json || true
