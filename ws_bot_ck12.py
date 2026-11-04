@@ -637,51 +637,66 @@ async def main():
                     surrender_done = False
                     for att in range(5):
                         if join_status == "spectating":
-                            log(f"\n  [SPECTATING] Chờ GAMEOVER rồi re-join... (attempt {att+1}/5)")
-                            # Chờ GAMEOVER (max 60s)
-                            gameover_deadline = time.time() + 60
-                            got_gameover = False
-                            while time.time() < gameover_deadline:
+                            log(f"  [SPECTATING] Chờ seat/game... (attempt {att+1}/5)")
+                            spec_deadline = time.time() + 120
+                            got_event = False
+                            while time.time() < spec_deadline:
                                 cmd, br, raw = await bot.recv_cmd(timeout=3)
                                 if cmd is None: continue
                                 if cmd == "PING": await bot.send_pong()
-                                elif cmd == "GAMEOVER":
-                                    log(f"  GAMEOVER → re-join để lấy seat")
-                                    got_gameover = True
+                                elif cmd == "START_MATCH":
+                                    log(f"  Game started -> wait GAMEOVER")
+                                    go_deadline = time.time() + 300
+                                    while time.time() < go_deadline:
+                                        c2, b2, r2 = await bot.recv_cmd(timeout=3)
+                                        if c2 is None: continue
+                                        if c2 == "PING": await bot.send_pong()
+                                        elif c2 == "GAMEOVER":
+                                            log(f"  GAMEOVER -> re-join")
+                                            got_event = True
+                                            break
+                                        elif c2 == "BALANCE_CHANGED" and b2 and b2.rem() >= 9:
+                                            bot.slot = b2.i8(); bot.balance = b2.i64()
+                                elif cmd == "PLAYER_EXITED":
+                                    log(f"  Player exited -> re-join (seat free!)")
+                                    got_event = True
                                     break
                                 elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                                     bot.slot = br.i8(); bot.balance = br.i64()
-                                    # Claim working while spectating
+                                    if bot.slot >= 0:
+                                        log(f"  Got seat! slot={bot.slot}")
+                                        got_event = True
+                                        break
                                     if bot.balance > 0:
-                                        log(f"  [spectating] balance: {bot.balance:,}")
-                            if not got_gameover:
-                                log(f"  No GAMEOVER in 60s — next cycle")
+                                        log(f"  [spec] balance: {bot.balance:,}")
+                            if not got_event:
+                                log(f"  No event in 120s -> next cycle")
                                 break
                             await asyncio.sleep(3)
                             join_status = await bot.join_table(table_id)
                             if join_status == "seated":
-                                log(f"  ✓ Got seat after GAMEOVER!")
+                                log(f"  Got seat after wait!")
                             elif not join_status:
-                                log(f"  Re-join failed — next cycle")
+                                log(f"  Re-join failed -> next cycle")
                                 break
-                            # Loop back: if seated → ready_wait_surrender
 
                         if join_status == "seated":
-                            log(f"\n[Phase 4] Surrender (attempt {att+1}/5)...")
+                            log(f"  [Phase 4] Surrender (attempt {att+1}/5)...")
                             status, lost = await bot.ready_wait_surrender(max_wait=20)
                             if status == "surrendered":
                                 total_surrendered += lost
-                                log(f"\n  ✓ Cycle {cycle}: surrendered {lost:,} xu")
+                                log(f"  Cycle {cycle}: surrendered {lost:,} xu")
                                 surrender_done = True
                                 break
                             elif status == "spectating":
                                 join_status = "spectating"
-                                continue  # back to spectating wait
+                                continue
                             elif status == "timeout":
-                                log(f"  Timeout — re-join")
+                                log(f"  Timeout -> re-join")
                                 await asyncio.sleep(5)
                                 join_status = await bot.join_table(table_id)
                                 if not join_status: break
+
 
                     # Return to lobby
                     ret = BW(); ret.wc("ENTER_PLACE"); ret.wa("Lobby.caro.0"); ret.wu(""); ret.i8(1)
