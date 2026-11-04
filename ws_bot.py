@@ -116,7 +116,7 @@ class WSBot:
                 self.slot = br.i8(); self.balance = br.i64()
 
     async def login_replay(self, frames):
-        """Replay captured LOGIN + setup frames."""
+        """Replay captured LOGIN + setup frames. Parse BALANCE_CHANGED for initial balance."""
         log("[WS] Replaying login frames...")
         for fb in frames:
             await self.send(fb)
@@ -124,14 +124,20 @@ class WSBot:
             try:
                 cmd, br, raw = await self.recv_cmd(timeout=1)
                 if cmd == "PING": await self.send_pong()
+                elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
+                    self.slot = br.i8(); self.balance = br.i64()
+                    log(f"  [login] balance: {self.balance:,}")
             except: pass
 
     async def enter_lobby(self):
-        """ENTER_PLACE Lobby.caro.0."""
+        """ENTER_PLACE Lobby.caro.0. Parse BALANCE_CHANGED."""
         log("[WS] ENTER_PLACE Lobby.caro.0...")
         ew = BW(); ew.wc("ENTER_PLACE"); ew.wa("Lobby.caro.0"); ew.wu(""); ew.i8(1)
         await self.send(ew.build())
         await self.drain(3)
+        # If balance still 0, try GET_TABLE_DATA_EX
+        if self.balance == 0:
+            await self.read_balance()
 
     async def read_balance(self):
         """Send GET_TABLE_DATA_EX, extract balance."""
@@ -512,7 +518,8 @@ async def main():
     parser.add_argument("--target-name", default=os.environ.get("TARGET_NAME", "nguyen123456"))
     parser.add_argument("--target-id", type=int, default=int(os.environ.get("TARGET_ID", "68982512")))
     parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "40000")))
-    parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "55000")))
+    parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "50000")),
+                        help="Max balance — game blocks VIDEO_REWARD above this (default 50000)")
     parser.add_argument("--bet-id", type=int, default=int(os.environ.get("BET_ID", "10")))
     parser.add_argument("--max-claims", type=int, default=int(os.environ.get("MAX_CLAIMS", "100")))
     parser.add_argument("--runtime", type=int, default=int(os.environ.get("RUNTIME_SECONDS", "1800")),
@@ -547,15 +554,16 @@ async def main():
             cycle += 1
             log(f"\n{'='*40} CYCLE {cycle} {'='*40}")
 
-            # Phase 1: CLAIM until ≥ claim_min
-            if bot.balance < args.claim_min:
+            # Phase 1: CLAIM until ≥ claim_min (skip if already ≥ claim_max)
+            if bot.balance >= args.claim_max:
+                log(f"\n[Phase 1] Balance {bot.balance:,} >= {args.claim_max:,} — game blocks claim, go surrender!")
+            elif bot.balance >= args.claim_min:
+                log(f"\n[Phase 1] Balance {bot.balance:,} >= {args.claim_min:,} — enough, skip claim")
+            else:
                 log(f"\n[Phase 1] Claim until {args.claim_min:,} xu...")
                 claims_ok, claimed = await bot.claim_until_threshold(
                     args.claim_min, args.claim_max, args.max_claims)
                 total_claimed += claimed
-            else:
-                log(f"\n[Phase 1] Balance {bot.balance:,} ≥ {args.claim_min:,} — skip claim")
-                claims_ok = 0
 
             if bot.balance < args.claim_min:
                 log(f"[STOP] Can't claim enough xu (balance {bot.balance:,} < {args.claim_min:,})")
