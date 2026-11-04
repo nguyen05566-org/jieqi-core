@@ -85,7 +85,9 @@ class WSBot:
         self.balance = 0
         self.slot = -1
 
-    async def send(self, data): await self.ws.send(data)
+    async def send(self, data):
+        try: await self.ws.send(data)
+        except Exception: pass  # connection closed — ignore
 
     async def recv_cmd(self, timeout=3):
         """Receive one frame, return (cmd_name, reader, raw_bytes). None on timeout/error."""
@@ -273,8 +275,10 @@ class WSBot:
                 log(f"  [!] Still spectating after {max_wait}s")
                 return "spectating", 0
 
-        # Seated (slot >= 0) → SET_READY → wait START_MATCH → SURRENDER
-        log(f"  [SEATED] slot={self.slot} → SET_READY")
+        # Seated (slot >= 0) → wait 5s (let game state settle) → SET_READY
+        log(f"  [SEATED] slot={self.slot} → waiting 5s for state to settle...")
+        await asyncio.sleep(5)
+        log(f"  → SET_READY")
         w = BW(); w.wc("SET_READY")
         await self.send(w.build())
 
@@ -298,15 +302,20 @@ class WSBot:
             elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
             elif cmd == "GAMEOVER":
-                log(f"  Game over (without us?) — retry")
+                # Game might have ended — check if balance decreased (surrender/forfeit)
+                if self.balance < bal_before:
+                    lost = bal_before - self.balance
+                    log(f"  ✓✓ GAMEOVER — lost {lost:,} xu (surrender/forfeit) ✓✓")
+                    return "surrendered", lost
+                log(f"  Game over (balance unchanged) — retry")
                 return "spectating", 0
 
         if not game_started:
             log(f"  [!] Game didn't start in {max_wait}s")
             return "timeout", 0
 
-        # SURRENDER after 3s (let game state settle)
-        await asyncio.sleep(3)
+        # SURRENDER after 5s (let game state fully load)
+        await asyncio.sleep(5)
         log(f"  Sending SURRENDER...")
         w = BW(); w.wc("SURRENDER")
         await self.send(w.build())
@@ -381,27 +390,70 @@ class WSBot:
         return None
 
     async def join_table(self, table_id):
-        """ENTER_PLACE to join a specific table."""
+        """ENTER_PLACE to join a table. Wait 5s, then GET_TABLE_DATA_EX to check slot."""
         path = f"Lobby.caro.0.{table_id}"
         log(f"  ENTER_PLACE → {path}")
         w = BW(); w.wc("ENTER_PLACE"); w.wa(path); w.wu(""); w.i8(1)
         await self.send(w.build())
 
+        # Wait for ENTER_PLACE response
+        joined = False
         for _ in range(8):
             cmd, br, r = await self.recv_cmd(timeout=3)
             if cmd is None: break
             if cmd == "ENTER_PLACE" and br and br.rem() > 0:
                 status = br.i8()
                 log(f"  ENTER_PLACE status={status}")
-                if status == 0:
-                    await self.drain(3)
-                    return True
+                if status == 0: joined = True
             elif cmd == "PING": await self.send_pong()
             elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
             elif cmd == "START_MATCH":
                 return True  # already in game
-        return False
+
+        if not joined:
+            return False
+
+        # Wait 5s for table state to settle, then GET_TABLE_DATA_EX
+        log(f"  Waiting 5s for table state...")
+        await asyncio.sleep(5)
+
+        # Send GET_TABLE_DATA_EX to get slot info
+        gw = BW(); gw.wc("GET_TABLE_DATA_EX"); gw.wa("")
+        await self.send(gw.build())
+
+        for _ in range(8):
+            cmd, br, r = await self.recv_cmd(timeout=3)
+            if cmd is None: break
+            if cmd == "GET_TABLE_DATA_EX" and br:
+                # Parse table data to extract slot
+                try:
+                    first = br.i8()  # status byte
+                    if first == 0 and br.rem() > 0:
+                        # Skip seats structure
+                        seat_count = br.u8()
+                        for _ in range(seat_count):
+                            if br.rem() < 3: break
+                            br.u8()  # seat id
+                            br.ra()  # some ascii
+                            br.u8()  # status
+                            child_count = br.u8()
+                            for _ in range(child_count):
+                                if br.rem() < 5: break
+                                br.u8(); br.ra(); br.ru(); br.u8(); br.u8()
+                        if br.rem() >= 2:
+                            br.u8()  # ???
+                            self.slot = br.i8()  # SLOT NUMBER!
+                            log(f"  Slot={self.slot} ({'seated' if self.slot >= 0 else 'spectating'})")
+                except Exception as e:
+                    log(f"  Table parse error: {e}")
+            elif cmd == "PING": await self.send_pong()
+            elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
+                self.slot = br.i8(); self.balance = br.i64()
+            elif cmd == "PLAYER_ENTERED":
+                log(f"  Player entered table")
+
+        return True
 
 # ======================== MAIN ========================
 async def main():
