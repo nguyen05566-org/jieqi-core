@@ -14,9 +14,9 @@ on:
       bot_runtime:
         description: 'Runtime seconds'
         required: false
-        default: '3300'
+        default: '21000'
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 */6 * * *'
 
 permissions:
   contents: read
@@ -28,7 +28,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -53,7 +53,7 @@ jobs:
           CLAIM_MAX: '50000'
           BET_ID: '10'
           MAX_CLAIMS: '100'
-          RUNTIME_SECONDS: ${{ inputs.bot_runtime || '3300' }}
+          RUNTIME_SECONDS: ${{ inputs.bot_runtime || '21000' }}
         run: |
           echo "=== ws_bot ck1 ==="
           python3 ws_bot_ck1.py --token-file state/tokens/ck1_token.json
