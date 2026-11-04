@@ -583,8 +583,8 @@ async def main():
                 if table_id:
                     break
                 if scan_attempt < 2:
-                    log(f"  Retry scan in 10s... ({scan_attempt+1}/3)")
-                    await asyncio.sleep(10)
+                    log(f"  Retry scan in 20s... ({scan_attempt+1}/3)")
+                    await asyncio.sleep(20)
 
             if not table_id:
                 log(f"  Target not found after 3 scans — next cycle")
