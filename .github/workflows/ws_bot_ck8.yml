@@ -16,7 +16,7 @@ on:
         required: false
         default: '21000'
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '30 */6 * * *'
 
 permissions:
   contents: read
