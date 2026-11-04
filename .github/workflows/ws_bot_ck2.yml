@@ -21,7 +21,7 @@ permissions:
 
 concurrency:
   group: ws-bot-ck2
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run:
