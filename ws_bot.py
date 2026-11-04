@@ -258,13 +258,14 @@ class WSBot:
         return False
 
     async def ready_wait_surrender(self, max_wait=20):
-        """Seated → SET_READY → wait START_MATCH (max 20s, game auto-starts after 10s)
-        → SURRENDER → wait GAMEOVER + balance change (max 30s).
-        If spectating → wait GAMEOVER (max 30s) → return 'spectating'."""
+        """Seated → SET_READY → SURRENDER → stay in table 2 min.
+        - If spectating → wait GAMEOVER (30s) → return 'spectating'.
+        - After GAMEOVER → check balance: if changed = surrendered.
+        - STAY in table 2 min (don't exit immediately) → claim works while spectating."""
         bal_before = self.balance
         log(f"  balance: {bal_before:,} | slot={self.slot}")
 
-        # Check if seated (slot >= 0) or spectating (slot < 0)
+        # Spectating → wait for seat
         if self.slot < 0:
             log(f"  [SPECTATING] slot={self.slot} — waiting for GAMEOVER (max 30s)...")
             deadline = time.time() + 30
@@ -281,16 +282,20 @@ class WSBot:
                     if self.slot >= 0:
                         log(f"  ✓ Got seat! slot={self.slot}")
                         break
+                    # Balance changed while spectating → claim working!
+                    if self.balance != bal_before:
+                        log(f"  [spectating] balance changed: {bal_before:,} → {self.balance:,} (claim working!)")
+                        bal_before = self.balance
             if self.slot < 0:
                 return "spectating", 0
 
-        # Seated → wait 3s → SET_READY (game auto-starts after ~10s, don't wait long)
+        # Seated → SET_READY → wait START_MATCH → SURRENDER
         log(f"  [SEATED] slot={self.slot} → wait 3s → SET_READY")
         await asyncio.sleep(3)
         w = BW(); w.wc("SET_READY")
         await self.send(w.build())
 
-        # Wait for START_MATCH (max 20s — game auto-starts after 10s)
+        # Wait START_MATCH (max 20s — game auto-starts after 10s)
         log(f"  Waiting for START_MATCH (max {max_wait}s)...")
         deadline = time.time() + max_wait
         game_started = False
@@ -309,54 +314,98 @@ class WSBot:
             elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
             elif cmd == "GAMEOVER":
-                # Game might have started and ended quickly — check balance
                 if self.balance < bal_before:
                     lost = bal_before - self.balance
                     log(f"  ✓✓ GAMEOVER — lost {lost:,} xu ✓✓")
+                    # Stay in table 2 min — claim while spectating
+                    await self._stay_and_claim(120, bal_before)
                     return "surrendered", lost
                 log(f"  Game over (balance unchanged) — retry")
                 return "spectating", 0
 
-        # Send SURRENDER regardless (game might have auto-started without START_MATCH msg)
+        # Send SURRENDER
         log(f"  Sending SURRENDER...")
         w = BW(); w.wc("SURRENDER")
         await self.send(w.build())
 
-        # Wait for GAMEOVER + balance change (max 30s — game might take time to end)
-        deadline = time.time() + 30
+        # Wait for GAMEOVER + balance change — STAY in table 2 min
+        deadline = time.time() + 120  # 2 min in table
+        surrendered = False
         while time.time() < deadline:
             cmd, br, raw = await self.recv_cmd(timeout=2)
             if cmd is None: continue
             if cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
-                if self.balance < bal_before:
+                if not surrendered and self.balance < bal_before:
                     lost = bal_before - self.balance
                     log(f"  ✓✓ SURRENDER SUCCESS! lost {lost:,} xu ✓✓")
-                    return "surrendered", lost
+                    surrendered = True
+                    # Don't return yet — stay in table, keep claiming
+                elif self.balance > bal_before + 100:
+                    # Balance INCREASED → claim working while in table!
+                    log(f"  [in-table] claim working! balance: {self.balance:,} (+{self.balance - bal_before:,})")
+                    bal_before = self.balance
             elif cmd == "PING": await self.send_pong()
             elif cmd == "GAMEOVER":
-                # Check balance after GAMEOVER (balance might update after)
                 log(f"  GAMEOVER — checking balance...")
-                # Wait a bit more for balance update
                 for _ in range(3):
                     cmd2, br2, raw2 = await self.recv_cmd(timeout=2)
                     if cmd2 == "BALANCE_CHANGED" and br2 and br2.rem() >= 9:
                         self.slot = br2.i8(); self.balance = br2.i64()
-                        if self.balance < bal_before:
+                        if not surrendered and self.balance < bal_before:
                             lost = bal_before - self.balance
-                            log(f"  ✓✓ SURRENDER SUCCESS! lost {lost:,} xu ✓✓")
-                            return "surrendered", lost
+                            log(f"  ✓✓ SURRENDER (post-GAMEOVER)! lost {lost:,} xu ✓✓")
+                            surrendered = True
+                            bal_before = self.balance
+                        elif self.balance > bal_before + 100:
+                            log(f"  [in-table] claim working! balance: {self.balance:,}")
+                            bal_before = self.balance
                     elif cmd2 == "PING": await self.send_pong()
-                # Balance didn't change — but GAMEOVER means game ended
-                if self.balance != bal_before:
-                    lost = bal_before - self.balance if self.balance < bal_before else 0
-                    if lost > 0:
-                        log(f"  ✓✓ Balance changed: lost {lost:,} xu ✓✓")
-                        return "surrendered", lost
-                log(f"  Game over but no balance change detected")
+                if not surrendered and self.balance != bal_before:
+                    diff = bal_before - self.balance
+                    if diff > 0:
+                        log(f"  ✓✓ Balance changed: lost {diff:,} xu ✓✓")
+                        surrendered = True
+                    bal_before = self.balance
 
-        log(f"  [!] No balance change after surrender (balance: {self.balance:,} vs {bal_before:,})")
+        if surrendered:
+            lost = bal_before - self.balance  # might be negative if claimed more
+            return "surrendered", max(0, lost)
+
+        log(f"  [!] No surrender detected (balance: {self.balance:,} vs {bal_before:,})")
         return "timeout", 0
+
+    async def _stay_and_claim(self, seconds, bal_after_surrender):
+        """Stay in table for N seconds. Claim via VIDEO_REWARD while spectating.
+        Log balance changes."""
+        log(f"  [stay] Staying in table {seconds}s — claim while spectating...")
+        deadline = time.time() + seconds
+        last_bal = self.balance
+        while time.time() < deadline:
+            # Try VIDEO_REWARD claim
+            vr = struct.pack('b', -12) + b"VIDEO_REWARD" + struct.pack('B', 1)
+            await self.send(vr)
+            
+            # Wait for responses (3s window)
+            resp_deadline = time.time() + 3
+            while time.time() < resp_deadline:
+                cmd, br, raw = await self.recv_cmd(timeout=1)
+                if cmd is None: break
+                if cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
+                    self.slot = br.i8(); self.balance = br.i64()
+                    if self.balance > last_bal:
+                        log(f"  [stay] claim +{self.balance - last_bal} | balance: {self.balance:,}")
+                        last_bal = self.balance
+                elif cmd == "PING": await self.send_pong()
+                elif cmd == "VIDEO_REWARD":
+                    pass  # claim response
+            
+            # Wait 10s before next claim
+            remaining = deadline - time.time()
+            if remaining < 12: break
+            await asyncio.sleep(10)
+        
+        log(f"  [stay] done — balance: {self.balance:,} (was {bal_after_surrender:,})")
 
     async def find_target_table(self, target_name, target_id):
         """Find target's table via LIST_ZONE_TABLE — search for name (UTF-16-BE).
