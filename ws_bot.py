@@ -386,17 +386,32 @@ class WSBot:
 
         log(f"  ✓ Found '{target_name}' at offset {pos}")
 
-        # Extract table ID: search backwards for 019f (TABLE_IN_ROOM_CHANGED cmd)
-        # Format: 019f <table_id 2B> 00 <name_len> <name UTF-16>
-        # 019f is ~6 bytes before name: 2(cmd) + 2(table_id) + 1(00) + 1(name_len) = 6
+        # Extract table ID: it's exactly 3 bytes before the name
+        # Format: <table_id 2B> <00 1B> <name_len 1B> <name UTF-16>
+        # So table_id is at pos-3 and pos-2
+        if pos >= 3:
+            table_id = _struct.unpack_from('>H', raw, pos - 3)[0]
+            # Verify: byte at pos-1 should be name length
+            expected_len = len(target_name)
+            actual_len = raw[pos - 1] if pos - 1 < len(raw) else 0
+            if actual_len == expected_len:
+                log(f"  Table ID: {table_id} (name_len verified: {actual_len}={expected_len})")
+                return table_id
+            else:
+                log(f"  Table ID candidate: {table_id} (name_len mismatch: {actual_len}≠{expected_len})")
+                # Try anyway — might be slightly different format
+                if 1000 <= table_id <= 99999:
+                    log(f"  Using table_id={table_id} (in valid range)")
+                    return table_id
+
+        # Fallback: search backwards for 019f pattern
         for i in range(pos - 2, max(0, pos - 50), -1):
             if raw[i] == 0x01 and i + 1 < len(raw) and raw[i+1] == 0x9f:
-                # Found 019f — table ID is the 2 bytes after
                 table_id = _struct.unpack_from('>H', raw, i + 2)[0]
                 log(f"  Table ID: {table_id} (from 019f pattern at offset {i})")
                 return table_id
 
-        # Fallback: search backwards for any i16 in wider range (1000-99999)
+        # Last resort: wide range search
         for i in range(pos - 2, max(0, pos - 50), -1):
             val = _struct.unpack_from('>H', raw, i)[0]
             if 1000 <= val <= 99999:
