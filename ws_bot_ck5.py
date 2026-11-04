@@ -53,6 +53,7 @@ class BW:
         if cid: self.p.append(struct.pack('>H', cid))
         else:
             b = n.encode('ascii'); self.i8(-len(b)); self.p.append(b)
+        return self  # ← FIX: return self for chaining BW().wc().build()
     def build(self): return b''.join(self.p)
 
 class BR:
