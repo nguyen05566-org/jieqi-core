@@ -196,15 +196,13 @@ class WSBot:
         consec_fail = 0
         total_claimed = 0
         video_reward_blocked = False
-        blocked_retries = 0
-        MAX_BLOCKED_RETRIES = 3  # sau 3 lần blocked liên tục → token chết, stop
 
         for i in range(max_claims):
-            if self.balance >= claim_max:
+            if self.balance >= claim_max and self.balance > 0:
                 log(f"  [t={i}] balance {self.balance:,} >= {claim_max:,} ✓ claim max reached")
                 break
-            if self.balance >= claim_min and video_reward_blocked:
-                log(f"  [t={i}] VIDEO_REWARD blocked + balance {self.balance:,} >= {claim_min:,} → proceed to surrender")
+            if self.balance >= claim_min and self.balance > 0:
+                log(f"  [t={i}] balance {self.balance:,} >= {claim_min:,} ✓ enough, go surrender")
                 break
 
             got_resp, amount = await self.claim_once()
@@ -212,35 +210,26 @@ class WSBot:
             if amount > 0:
                 claims_ok += 1
                 consec_fail = 0
-                blocked_retries = 0  # claim worked → reset blocked counter
                 total_claimed += amount
                 log(f"  [t={i}] ✓ claim +{amount} | balance: {self.balance:,} | total: {total_claimed:,}")
             else:
                 claims_fail += 1
                 consec_fail += 1
                 err = "no response" if not got_resp else "no balance change"
-                log(f"  [t={i}] ✗ claim FAIL ({err}) | consec={consec_fail} | balance: {self.balance:,}")
+                log(f"  [t={i}] ✗ claim FAIL ({err}) | balance: {self.balance:,}")
                 if not got_resp:
+                    # VIDEO_REWARD blocked → go surrender IMMEDIATELY
+                    # (balance might be high but reads as 0 — don't waste time retrying)
+                    log(f"  [blocked] VIDEO_REWARD blocked → go surrender now!")
                     video_reward_blocked = True
-                    if self.balance >= claim_min:
-                        log(f"  [stop] VIDEO_REWARD blocked, balance {self.balance:,} >= {claim_min:,} → go surrender!")
-                        break
-                    else:
-                        blocked_retries += 1
-                        if blocked_retries >= MAX_BLOCKED_RETRIES:
-                            log(f"  [STOP] VIDEO_REWARD blocked {blocked_retries}x, balance {self.balance:,} < {claim_min:,} → TOKEN EXPIRED, stop")
-                            break
-                        log(f"  [wait] VIDEO_REWARD blocked (retry {blocked_retries}/{MAX_BLOCKED_RETRIES}), wait 30s...")
-                        await asyncio.sleep(30)
-                        continue
-                if consec_fail >= 6:
-                    log(f"  [stop] 6 consecutive failures")
+                    break
+                if consec_fail >= 3:
+                    log(f"  [stop] 3 consecutive failures → go surrender")
                     break
 
             # Cooldown: 10s + jitter
             jitter = random.uniform(0.5, 1.5)
-            cooldown = 10.0 + jitter
-            await asyncio.sleep(cooldown)
+            await asyncio.sleep(10.0 + jitter)
 
         log(f"[CLAIM done] {claims_ok} OK / {claims_fail} fail | final: {self.balance:,} | claimed: {total_claimed:,}")
         return claims_ok, total_claimed
@@ -554,20 +543,23 @@ async def main():
             cycle += 1
             log(f"\n{'='*40} CYCLE {cycle} {'='*40}")
 
-            # Phase 1: CLAIM until ≥ claim_min (skip if already ≥ claim_max)
-            if bot.balance >= args.claim_max:
-                log(f"\n[Phase 1] Balance {bot.balance:,} >= {args.claim_max:,} — game blocks claim, go surrender!")
-            elif bot.balance >= args.claim_min:
-                log(f"\n[Phase 1] Balance {bot.balance:,} >= {args.claim_min:,} — enough, skip claim")
-            else:
+            # Phase 1: CLAIM (if balance readable and < claim_max)
+            if 0 < bot.balance < args.claim_min:
                 log(f"\n[Phase 1] Claim until {args.claim_min:,} xu...")
                 claims_ok, claimed = await bot.claim_until_threshold(
                     args.claim_min, args.claim_max, args.max_claims)
                 total_claimed += claimed
+            elif bot.balance >= args.claim_min:
+                log(f"\n[Phase 1] Balance {bot.balance:,} ≥ {args.claim_min:,} — skip claim, go surrender")
+            else:
+                # Balance = 0 (not read) — try claim once, if blocked go surrender
+                log(f"\n[Phase 1] Balance unknown — try claim...")
+                claims_ok, claimed = await bot.claim_until_threshold(
+                    args.claim_min, args.claim_max, args.max_claims)
+                total_claimed += claimed
 
-            if bot.balance < args.claim_min:
-                log(f"[STOP] Can't claim enough xu (balance {bot.balance:,} < {args.claim_min:,})")
-                break
+            # ALWAYS proceed to surrender (even if claim blocked or balance = 0)
+            # If token is dead, surrender will also fail → bot stops naturally
 
             # Phase 2: FIND TARGET
             log(f"\n[Phase 2] Find target '{args.target_name}'...")
