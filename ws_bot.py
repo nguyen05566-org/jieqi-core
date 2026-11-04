@@ -561,13 +561,20 @@ async def main():
             # ALWAYS proceed to surrender (even if claim blocked or balance = 0)
             # If token is dead, surrender will also fail → bot stops naturally
 
-            # Phase 2: FIND TARGET
+            # Phase 2: FIND TARGET (retry scan 3 times)
             log(f"\n[Phase 2] Find target '{args.target_name}'...")
-            table_id = await bot.find_target_table(args.target_name, args.target_id)
+            table_id = None
+            for scan_attempt in range(3):
+                table_id = await bot.find_target_table(args.target_name, args.target_id)
+                if table_id:
+                    break
+                if scan_attempt < 2:
+                    log(f"  Retry scan in 10s... ({scan_attempt+1}/3)")
+                    await asyncio.sleep(10)
 
             if not table_id:
-                log(f"  Target not found — waiting 30s then retry...")
-                await asyncio.sleep(30)
+                log(f"  Target not found after 3 scans — next cycle")
+                await asyncio.sleep(15)
                 continue
 
             # Phase 3: JOIN TABLE
@@ -609,6 +616,12 @@ async def main():
 
             if not surrender_done:
                 log(f"\n  Could not surrender this cycle — next cycle")
+
+            # Return to lobby after surrender (bot might still be in ended table)
+            log(f"\n  Return to lobby...")
+            ret = BW(); ret.wc("ENTER_PLACE"); ret.wa("Lobby.caro.0"); ret.wu(""); ret.i8(1)
+            await bot.send(ret.build())
+            await bot.drain(3)
 
             # Check runtime
             remaining = deadline - time.time()
