@@ -190,6 +190,8 @@ class WSBot:
         consec_fail = 0
         total_claimed = 0
         video_reward_blocked = False
+        blocked_retries = 0
+        MAX_BLOCKED_RETRIES = 3  # sau 3 lần blocked liên tục → token chết, stop
 
         for i in range(max_claims):
             if self.balance >= claim_max:
@@ -204,6 +206,7 @@ class WSBot:
             if amount > 0:
                 claims_ok += 1
                 consec_fail = 0
+                blocked_retries = 0  # claim worked → reset blocked counter
                 total_claimed += amount
                 log(f"  [t={i}] ✓ claim +{amount} | balance: {self.balance:,} | total: {total_claimed:,}")
             else:
@@ -212,16 +215,17 @@ class WSBot:
                 err = "no response" if not got_resp else "no balance change"
                 log(f"  [t={i}] ✗ claim FAIL ({err}) | consec={consec_fail} | balance: {self.balance:,}")
                 if not got_resp:
-                    # VIDEO_REWARD blocked by server (balance too high or cooldown)
                     video_reward_blocked = True
                     if self.balance >= claim_min:
                         log(f"  [stop] VIDEO_REWARD blocked, balance {self.balance:,} >= {claim_min:,} → go surrender!")
                         break
                     else:
-                        # Balance too low but claims blocked — wait 30s and retry
-                        log(f"  [wait] VIDEO_REWARD blocked, balance {self.balance:,} < {claim_min:,} → wait 30s, retry")
+                        blocked_retries += 1
+                        if blocked_retries >= MAX_BLOCKED_RETRIES:
+                            log(f"  [STOP] VIDEO_REWARD blocked {blocked_retries}x, balance {self.balance:,} < {claim_min:,} → TOKEN EXPIRED, stop")
+                            break
+                        log(f"  [wait] VIDEO_REWARD blocked (retry {blocked_retries}/{MAX_BLOCKED_RETRIES}), wait 30s...")
                         await asyncio.sleep(30)
-                        consec_fail = 0  # reset, don't stop on temporary block
                         continue
                 if consec_fail >= 6:
                     log(f"  [stop] 6 consecutive failures")
