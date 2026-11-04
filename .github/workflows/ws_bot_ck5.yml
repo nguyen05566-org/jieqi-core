@@ -15,8 +15,6 @@ on:
         description: 'Runtime seconds'
         required: false
         default: '21000'
-  schedule:
-    - cron: '20 */6 * * *'
 
 permissions:
   contents: read
