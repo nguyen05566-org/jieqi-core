@@ -386,22 +386,24 @@ class WSBot:
 
         log(f"  ✓ Found '{target_name}' at offset {pos}")
 
-        # Extract table ID: it's exactly 3 bytes before the name
-        # Format: <table_id 2B> <00 1B> <name_len 1B> <name UTF-16>
-        # So table_id is at pos-3 and pos-2
-        if pos >= 3:
-            table_id = _struct.unpack_from('>H', raw, pos - 3)[0]
-            # Verify: byte at pos-1 should be name length
+        # Extract table ID: it's exactly 4 bytes before the name
+        # Format: <table_id_hi 1B> <table_id_lo 1B> <00 1B> <name_len 1B> <name UTF-16>
+        # table_id (2 bytes big-endian) is at pos-4 and pos-3
+        if pos >= 4:
+            table_id = _struct.unpack_from('>H', raw, pos - 4)[0]
+            # Verify: byte at pos-1 should be name length, pos-2 should be 0x00
             expected_len = len(target_name)
             actual_len = raw[pos - 1] if pos - 1 < len(raw) else 0
-            if actual_len == expected_len:
-                log(f"  Table ID: {table_id} (name_len verified: {actual_len}={expected_len})")
+            separator = raw[pos - 2] if pos - 2 < len(raw) else 0xFF
+            if actual_len == expected_len and separator == 0x00:
+                log(f"  Table ID: {table_id} (verified: name_len={actual_len}, sep=0x00)")
+                return table_id
+            elif actual_len == expected_len:
+                log(f"  Table ID: {table_id} (name_len OK, sep={separator:#x})")
                 return table_id
             else:
                 log(f"  Table ID candidate: {table_id} (name_len mismatch: {actual_len}≠{expected_len})")
-                # Try anyway — might be slightly different format
                 if 1000 <= table_id <= 99999:
-                    log(f"  Using table_id={table_id} (in valid range)")
                     return table_id
 
         # Fallback: search backwards for 019f pattern
