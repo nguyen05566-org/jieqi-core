@@ -90,8 +90,11 @@ class WSBot:
 
     async def recv_cmd(self, timeout=3):
         """Receive one frame. Returns (cmd, reader, raw) or (None,None,None) on timeout.
-        Raises exception on connection closed (for reconnect)."""
-        r = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
+        Raises ConnectionClosedError on WS death (for reconnect)."""
+        try:
+            r = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None, None, None  # timeout = no data, normal
         if isinstance(r, bytes):
             br = BR(r)
             cmd = br.rc()
@@ -747,7 +750,7 @@ async def main():
             reconnect_count += 1
             log(f"\n[WS ERROR] {type(e).__name__}: {e} → reconnect {reconnect_count}/{MAX_RECONNECTS}")
             if reconnect_count < MAX_RECONNECTS:
-                await bot.wait_with_keepalive(5)
+                await asyncio.sleep(5)  # plain sleep — WS is dead, can't use bot
 
     log(f"\n{'='*60}")
     log(f"FINAL SUMMARY")
