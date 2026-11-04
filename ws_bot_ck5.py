@@ -553,7 +553,7 @@ async def main():
                         help="Max balance — game blocks VIDEO_REWARD above this (default 50000)")
     parser.add_argument("--bet-id", type=int, default=int(os.environ.get("BET_ID", "10")))
     parser.add_argument("--max-claims", type=int, default=int(os.environ.get("MAX_CLAIMS", "100")))
-    parser.add_argument("--runtime", type=int, default=int(os.environ.get("RUNTIME_SECONDS", "21000")),
+    parser.add_argument("--runtime", type=int, default=int(os.environ.get("RUNTIME_SECONDS", "21600")),
                         help="Total runtime in seconds (default 1800 = 30 min)")
     args = parser.parse_args()
 
