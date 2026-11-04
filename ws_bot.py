@@ -367,20 +367,37 @@ class WSBot:
                 pid_bytes = _struct.pack('>q', target_id)
                 pos = raw.find(pid_bytes)
             if pos < 0:
-                log(f"  Target '{target_name}' not found in lobby ({len(raw)}B)")
+                log(f"  Target '{target_name}' (id={target_id}) not found in lobby ({len(raw)}B)")
+                # Dump all names found for debugging
+                i = 0
+                while i < len(raw) - 3:
+                    if raw[i] == 0 and 0 < raw[i+1] < 20:
+                        nlen = raw[i+1]
+                        if i + 2 + nlen * 2 <= len(raw):
+                            try:
+                                nm = raw[i+2:i+2+nlen*2].decode('utf-16-be', 'replace')
+                                if nm.isprintable() and len(nm) >= 2:
+                                    log(f"    lobby player: \"{nm}\"")
+                            except: pass
+                        i += 2 + nlen * 2
+                    else:
+                        i += 1
                 return None
 
         log(f"  ✓ Found '{target_name}' at offset {pos}")
 
-        # Extract table ID: search backwards for i16 in range 9000-9999
+        # Extract table ID: search backwards for 019f (TABLE_IN_ROOM_CHANGED cmd)
+        # Format: 019f <table_id 2B> 00 <name_len> <name UTF-16>
+        # 019f is ~6 bytes before name: 2(cmd) + 2(table_id) + 1(00) + 1(name_len) = 6
         for i in range(pos - 2, max(0, pos - 50), -1):
-            val = _struct.unpack_from('>H', raw, i)[0]
-            if 9000 <= val <= 9999:
-                log(f"  Table ID: {val}")
-                return val
+            if raw[i] == 0x01 and i + 1 < len(raw) and raw[i+1] == 0x9f:
+                # Found 019f — table ID is the 2 bytes after
+                table_id = _struct.unpack_from('>H', raw, i + 2)[0]
+                log(f"  Table ID: {table_id} (from 019f pattern at offset {i})")
+                return table_id
 
-        # Wider range
-        for i in range(pos - 2, max(0, pos - 100), -1):
+        # Fallback: search backwards for any i16 in wider range (1000-99999)
+        for i in range(pos - 2, max(0, pos - 50), -1):
             val = _struct.unpack_from('>H', raw, i)[0]
             if 1000 <= val <= 99999:
                 log(f"  Table ID (wide): {val}")
