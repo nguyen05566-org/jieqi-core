@@ -258,7 +258,6 @@ class WSBot:
         return False
 
     async def ready_wait_surrender(self, max_wait=20):
-    async def ready_wait_surrender(self, max_wait=20):
         """Bot đã SEATED (slot≥0, game chưa start) → SET_READY → chờ START_MATCH → SURRENDER.
         KHÔNG gửi SET_READY/SURRENDER khi spectating (join_table đã filter)."""
         bal_before = self.balance
