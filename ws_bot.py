@@ -295,35 +295,41 @@ class WSBot:
         w = BW(); w.wc("SET_READY")
         await self.send(w.build())
 
-        # Wait START_MATCH (max 20s — game auto-starts after 10s)
-        log(f"  Waiting for START_MATCH (max {max_wait}s)...")
-        deadline = time.time() + max_wait
+        # Wait START_MATCH — DON'T send SURRENDER until game actually starts!
+        # Game auto-starts after countdown (~10s). If START_MATCH doesn't come → leave.
+        log(f"  Waiting for START_MATCH (max 30s — countdown ~10s)...")
+        deadline = time.time() + 30
         game_started = False
         while time.time() < deadline:
             cmd, br, raw = await self.recv_cmd(timeout=2)
             if cmd is None: continue
             if cmd == "START_MATCH":
                 game_started = True
-                log(f"  ✓ GAME STARTED!")
+                log(f"  ✓ GAME STARTED! → SURRENDER immediately")
                 break
             elif cmd == "PING": await self.send_pong()
             elif cmd == "SET_TURN" and not game_started:
+                # Countdown — re-SET_READY (ensure ready)
                 w2 = BW(); w2.wc("SET_READY"); await self.send(w2.build())
             elif cmd == "PLAYER_ENTERED":
                 w2 = BW(); w2.wc("SET_READY"); await self.send(w2.build())
             elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
             elif cmd == "GAMEOVER":
+                # Game ended before we could surrender — check balance
                 if self.balance < bal_before:
                     lost = bal_before - self.balance
-                    log(f"  ✓✓ GAMEOVER — lost {lost:,} xu ✓✓")
-                    # Stay in table 2 min — claim while spectating
+                    log(f"  ✓✓ GAMEOVER (auto) — lost {lost:,} xu ✓✓")
                     await self._stay_and_claim(120, bal_before)
                     return "surrendered", lost
-                log(f"  Game over (balance unchanged) — retry")
+                log(f"  Game over before start — retry")
                 return "spectating", 0
 
-        # Send SURRENDER
+        if not game_started:
+            log(f"  [!] START_MATCH not received in 30s — game didn't start (target not ready?)")
+            return "timeout", 0
+
+        # START_MATCH received → SURRENDER IMMEDIATELY (game has started!)
         log(f"  Sending SURRENDER...")
         w = BW(); w.wc("SURRENDER")
         await self.send(w.build())
