@@ -53,6 +53,7 @@ class BW:
         if cid: self.p.append(struct.pack('>H', cid))
         else:
             b = n.encode('ascii'); self.i8(-len(b)); self.p.append(b)
+        return self  # ← FIX: return self for chaining BW().wc().build()
     def build(self): return b''.join(self.p)
 
 class BR:
@@ -86,33 +87,70 @@ class WSBot:
         self.slot = -1
 
     async def send(self, data):
-        try: await self.ws.send(data)
-        except Exception: pass  # connection closed — ignore
+        await self.ws.send(data)  # let exception propagate → reconnect
 
     async def recv_cmd(self, timeout=3):
-        """Receive one frame, return (cmd_name, reader, raw_bytes). None on timeout/error."""
+        """Receive one frame. Returns (cmd, reader, raw) or (None,None,None) on timeout.
+        Raises ConnectionClosedError on WS death (for reconnect)."""
         try:
             r = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
-            if isinstance(r, bytes):
-                br = BR(r)
-                cmd = br.rc()
-                return cmd, br, r
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except asyncio.TimeoutError:
+            return None, None, None  # timeout = no data, normal
+        if isinstance(r, bytes):
+            br = BR(r)
+            cmd = br.rc()
+            return cmd, br, r
         return None, None, None
 
+    async def keepalive_ping(self):
+        """Send PING to keep WS alive. Call periodically."""
+        try:
+            w = BW(); w.wc("PING")
+            await self.ws.send(w.build())
+        except Exception:
+            raise  # connection dead → reconnect
+
+    async def wait_with_keepalive(self, seconds):
+        """Sleep for N seconds while handling PING/PONG. 
+        Sends PING every 15s. Raises on connection death."""
+        deadline = time.time() + seconds
+        last_ping = 0
+        while time.time() < deadline:
+            remaining = min(deadline - time.time(), 3)
+            try:
+                cmd, br, raw = await self.recv_cmd(timeout=max(0.5, remaining))
+            except asyncio.TimeoutError:
+                cmd = None
+            # Send PING every 15s
+            if time.time() - last_ping > 15:
+                await self.keepalive_ping()
+                last_ping = time.time()
+            if cmd is not None:
+                if cmd == "PING":
+                    try: await self.send(BW().wc("PONG").build())
+                    except: raise
+                elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
+                    self.slot = br.i8(); self.balance = br.i64()
+                # Return the command for caller to process
+                return cmd, br, raw
+        return None, None, None  # timeout
+
     async def send_pong(self):
-        try: await self.ws.send(BW().wc("PONG").build())
-        except Exception: pass
+        await self.ws.send(BW().wc("PONG").build())  # raise on death
 
     async def drain(self, seconds=2):
         """Drain pending messages for N seconds, handling PING."""
         deadline = time.time() + seconds
         while time.time() < deadline:
-            cmd, br, raw = await self.recv_cmd(timeout=1)
+            try:
+                cmd, br, raw = await self.recv_cmd(timeout=1)
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                raise  # connection death
             if cmd is None: break
             if cmd == "PING": await self.send_pong()
-            elif cmd == "BALANCE_CHANGED" and br.rem() >= 9:
+            elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
 
     async def login_replay(self, frames):
@@ -257,57 +295,76 @@ class WSBot:
                 self.slot = br.i8(); self.balance = br.i64()
         return False
 
-    async def ready_wait_surrender(self, max_wait=20):
-        """Bot đã SEATED (slot≥0, game chưa start) → SET_READY → chờ START_MATCH → SURRENDER.
-        KHÔNG gửi SET_READY/SURRENDER khi spectating (join_table đã filter)."""
+    async def ready_wait_surrender(self, runtime_deadline):
+        """Bot SEATED → SET_READY → CHỜ START_MATCH (KHÔNG timeout, ở lại đến khi game start)
+        → SURRENDER → CHỜ GAMEOVER + balance change.
+        Bot KHÔNG rời bàn cho đến khi surrender xong hoặc runtime hết."""
         bal_before = self.balance
         log(f"  balance: {bal_before:,} | slot={self.slot}")
 
-        log(f"  [SEATED] slot={self.slot} → wait 3s → SET_READY")
-        await asyncio.sleep(3)
-        w = BW(); w.wc("SET_READY")
-        await self.send(w.build())
+        # SET_READY
+        log(f"  [SEATED] slot={self.slot} → SET_READY")
+        await self.send(BW().wc("SET_READY").build())
 
-        log(f"  Waiting for START_MATCH (max 30s)...")
-        deadline = time.time() + 30
+        # CHỜ START_MATCH — KHÔNG timeout! Ở lại trong bàn, gửi PING, chờ game
+        log(f"  Chờ START_MATCH (ở lại trong bàn, không rời)...")
+        last_ready = time.time()
         game_started = False
-        while time.time() < deadline:
-            cmd, br, raw = await self.recv_cmd(timeout=2)
-            if cmd is None: continue
-            if cmd == "START_MATCH":
+        while time.time() < runtime_deadline:
+            try:
+                cmd, br, raw = await self.recv_cmd(timeout=3)
+            except Exception:
+                raise  # WS death → reconnect
+
+            if cmd is None:
+                # Timeout — gửi PING keepalive + re-SET_READY mỗi 30s
+                if time.time() - last_ready > 30:
+                    await self.send(BW().wc("SET_READY").build())
+                    last_ready = time.time()
+                continue
+
+            if cmd == "PING":
+                await self.send_pong()
+            elif cmd == "START_MATCH":
                 game_started = True
-                log(f"  ✓ GAME STARTED! → SURRENDER immediately")
+                log(f"  ✓ GAME STARTED!")
                 break
-            elif cmd == "PING": await self.send_pong()
-            elif cmd == "SET_TURN" and not game_started:
-                w2 = BW(); w2.wc("SET_READY"); await self.send(w2.build())
+            elif cmd == "SET_TURN":
+                # Countdown — re-SET_READY
+                await self.send(BW().wc("SET_READY").build())
             elif cmd == "PLAYER_ENTERED":
-                w2 = BW(); w2.wc("SET_READY"); await self.send(w2.build())
+                await self.send(BW().wc("SET_READY").build())
             elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
             elif cmd == "GAMEOVER":
                 if self.balance < bal_before:
                     lost = bal_before - self.balance
-                    log(f"  ✓✓ GAMEOVER (auto) — lost {lost:,} xu ✓✓")
-                    await self._stay_and_claim(120, bal_before)
+                    log(f"  ✓✓ GAMEOVER — lost {lost:,} xu ✓✓")
                     return "surrendered", lost
-                log(f"  Game over before start — spectating")
+                log(f"  GAMEOVER (balance unchanged)")
                 return "spectating", 0
 
         if not game_started:
-            log(f"  [!] START_MATCH not received in 30s")
+            log(f"  Runtime hết — chưa có START_MATCH")
             return "timeout", 0
 
-        log(f"  Sending SURRENDER...")
-        w = BW(); w.wc("SURRENDER")
-        await self.send(w.build())
+        # START_MATCH → SURRENDER ngay
+        log(f"  SURRENDER!")
+        await self.send(BW().wc("SURRENDER").build())
 
+        # CHỜ GAMEOVER + balance change (ở lại, keepalive)
         deadline = time.time() + 120
         surrendered = False
-        while time.time() < deadline:
-            cmd, br, raw = await self.recv_cmd(timeout=2)
+        while time.time() < deadline and time.time() < runtime_deadline:
+            try:
+                cmd, br, raw = await self.recv_cmd(timeout=2)
+            except Exception:
+                raise
+
             if cmd is None: continue
-            if cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
+            if cmd == "PING":
+                await self.send_pong()
+            elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                 self.slot = br.i8(); self.balance = br.i64()
                 if not surrendered and self.balance < bal_before:
                     lost = bal_before - self.balance
@@ -316,34 +373,28 @@ class WSBot:
                 elif self.balance > bal_before + 100:
                     log(f"  [in-table] claim working! balance: {self.balance:,}")
                     bal_before = self.balance
-            elif cmd == "PING": await self.send_pong()
             elif cmd == "GAMEOVER":
                 log(f"  GAMEOVER — checking balance...")
-                for _ in range(3):
-                    cmd2, br2, raw2 = await self.recv_cmd(timeout=2)
-                    if cmd2 == "BALANCE_CHANGED" and br2 and br2.rem() >= 9:
-                        self.slot = br2.i8(); self.balance = br2.i64()
+                for _ in range(5):
+                    try:
+                        c2, b2, r2 = await self.recv_cmd(timeout=2)
+                    except Exception:
+                        raise
+                    if c2 is None: continue
+                    if c2 == "PING": await self.send_pong()
+                    elif c2 == "BALANCE_CHANGED" and b2 and b2.rem() >= 9:
+                        self.slot = b2.i8(); self.balance = b2.i64()
                         if not surrendered and self.balance < bal_before:
                             lost = bal_before - self.balance
                             log(f"  ✓✓ SURRENDER (post-GAMEOVER)! lost {lost:,} xu ✓✓")
                             surrendered = True
                             bal_before = self.balance
-                        elif self.balance > bal_before + 100:
-                            log(f"  [in-table] claim working!")
-                            bal_before = self.balance
-                    elif cmd2 == "PING": await self.send_pong()
-                if not surrendered and self.balance != bal_before:
-                    diff = bal_before - self.balance
-                    if diff > 0:
-                        log(f"  ✓✓ Balance changed: lost {diff:,} xu ✓✓")
-                        surrendered = True
-                    bal_before = self.balance
 
         if surrendered:
             return "surrendered", max(0, bal_before - self.balance)
-
-        log(f"  [!] No surrender detected (balance: {self.balance:,} vs {bal_before:,})")
+        log(f"  [!] No surrender detected (balance: {self.balance:,})")
         return "timeout", 0
+
 
     async def _stay_and_claim(self, seconds, bal_after_surrender):
         """Stay in table for N seconds. Claim via VIDEO_REWARD while spectating.
@@ -494,7 +545,7 @@ class WSBot:
 
         # Wait 5s for table state to settle
         log(f"  Waiting 5s for table state...")
-        await asyncio.sleep(5)
+        await self.wait_with_keepalive(5)
 
         # GET_TABLE_DATA_EX → parse slot + is_playing
         gw = BW(); gw.wc("GET_TABLE_DATA_EX"); gw.wa("")
@@ -553,7 +604,7 @@ async def main():
                         help="Max balance — game blocks VIDEO_REWARD above this (default 50000)")
     parser.add_argument("--bet-id", type=int, default=int(os.environ.get("BET_ID", "10")))
     parser.add_argument("--max-claims", type=int, default=int(os.environ.get("MAX_CLAIMS", "100")))
-    parser.add_argument("--runtime", type=int, default=int(os.environ.get("RUNTIME_SECONDS", "1800")),
+    parser.add_argument("--runtime", type=int, default=int(os.environ.get("RUNTIME_SECONDS", "21600")),
                         help="Total runtime in seconds (default 1800 = 30 min)")
     args = parser.parse_args()
 
@@ -637,51 +688,66 @@ async def main():
                     surrender_done = False
                     for att in range(5):
                         if join_status == "spectating":
-                            log(f"\n  [SPECTATING] Chờ GAMEOVER rồi re-join... (attempt {att+1}/5)")
-                            # Chờ GAMEOVER (max 60s)
-                            gameover_deadline = time.time() + 60
-                            got_gameover = False
-                            while time.time() < gameover_deadline:
+                            log(f"  [SPECTATING] Chờ seat/game... (attempt {att+1}/5)")
+                            spec_deadline = time.time() + 120
+                            got_event = False
+                            while time.time() < spec_deadline:
                                 cmd, br, raw = await bot.recv_cmd(timeout=3)
                                 if cmd is None: continue
                                 if cmd == "PING": await bot.send_pong()
-                                elif cmd == "GAMEOVER":
-                                    log(f"  GAMEOVER → re-join để lấy seat")
-                                    got_gameover = True
+                                elif cmd == "START_MATCH":
+                                    log(f"  Game started -> wait GAMEOVER")
+                                    go_deadline = time.time() + 300
+                                    while time.time() < go_deadline:
+                                        c2, b2, r2 = await bot.recv_cmd(timeout=3)
+                                        if c2 is None: continue
+                                        if c2 == "PING": await bot.send_pong()
+                                        elif c2 == "GAMEOVER":
+                                            log(f"  GAMEOVER -> re-join")
+                                            got_event = True
+                                            break
+                                        elif c2 == "BALANCE_CHANGED" and b2 and b2.rem() >= 9:
+                                            bot.slot = b2.i8(); bot.balance = b2.i64()
+                                elif cmd == "PLAYER_EXITED":
+                                    log(f"  Player exited -> re-join (seat free!)")
+                                    got_event = True
                                     break
                                 elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
                                     bot.slot = br.i8(); bot.balance = br.i64()
-                                    # Claim working while spectating
+                                    if bot.slot >= 0:
+                                        log(f"  Got seat! slot={bot.slot}")
+                                        got_event = True
+                                        break
                                     if bot.balance > 0:
-                                        log(f"  [spectating] balance: {bot.balance:,}")
-                            if not got_gameover:
-                                log(f"  No GAMEOVER in 60s — next cycle")
+                                        log(f"  [spec] balance: {bot.balance:,}")
+                            if not got_event:
+                                log(f"  No event in 120s -> next cycle")
                                 break
-                            await asyncio.sleep(3)
+                            await bot.wait_with_keepalive(3)
                             join_status = await bot.join_table(table_id)
                             if join_status == "seated":
-                                log(f"  ✓ Got seat after GAMEOVER!")
+                                log(f"  Got seat after wait!")
                             elif not join_status:
-                                log(f"  Re-join failed — next cycle")
+                                log(f"  Re-join failed -> next cycle")
                                 break
-                            # Loop back: if seated → ready_wait_surrender
 
                         if join_status == "seated":
-                            log(f"\n[Phase 4] Surrender (attempt {att+1}/5)...")
-                            status, lost = await bot.ready_wait_surrender(max_wait=20)
+                            log(f"  [Phase 4] Surrender (attempt {att+1}/5)...")
+                            status, lost = await bot.ready_wait_surrender(deadline)
                             if status == "surrendered":
                                 total_surrendered += lost
-                                log(f"\n  ✓ Cycle {cycle}: surrendered {lost:,} xu")
+                                log(f"  Cycle {cycle}: surrendered {lost:,} xu")
                                 surrender_done = True
                                 break
                             elif status == "spectating":
                                 join_status = "spectating"
-                                continue  # back to spectating wait
+                                continue
                             elif status == "timeout":
-                                log(f"  Timeout — re-join")
-                                await asyncio.sleep(5)
+                                log(f"  Timeout -> re-join")
+                                await bot.wait_with_keepalive(5)
                                 join_status = await bot.join_table(table_id)
                                 if not join_status: break
+
 
                     # Return to lobby
                     ret = BW(); ret.wc("ENTER_PLACE"); ret.wa("Lobby.caro.0"); ret.wu(""); ret.i8(1)
@@ -692,13 +758,13 @@ async def main():
                     if remaining < 30:
                         log(f"\n[Runtime] {remaining:.0f}s left — stopping")
                         break
-                    await asyncio.sleep(5)
+                    await bot.wait_with_keepalive(5)
 
         except Exception as e:
             reconnect_count += 1
             log(f"\n[WS ERROR] {type(e).__name__}: {e} → reconnect {reconnect_count}/{MAX_RECONNECTS}")
             if reconnect_count < MAX_RECONNECTS:
-                await asyncio.sleep(5)
+                await asyncio.sleep(5)  # plain sleep — WS is dead, can't use bot
 
     log(f"\n{'='*60}")
     log(f"FINAL SUMMARY")
