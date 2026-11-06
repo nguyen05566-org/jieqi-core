@@ -27,6 +27,7 @@ import random
 from pathlib import Path
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 # ======================== BINARY PROTOCOL ========================
 CMD_MAP = {
@@ -86,16 +87,24 @@ class WSBot:
         self.balance = 0
         self.slot = -1
 
+    def is_connected(self):
+        """Kiểm tra WS còn mở (chưa close_code)."""
+        return self.ws is not None and getattr(self.ws, "close_code", None) is None
+
     async def send(self, data):
+        if not self.is_connected():
+            raise ConnectionClosed(1006, "send on closed websocket")
         await self.ws.send(data)  # let exception propagate → reconnect
 
     async def recv_cmd(self, timeout=3):
         """Receive one frame. Returns (cmd, reader, raw) or (None,None,None) on timeout.
-        Raises ConnectionClosedError on WS death (for reconnect)."""
+        Raises ConnectionClosed on WS death (for reconnect)."""
         try:
             r = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
         except asyncio.TimeoutError:
             return None, None, None  # timeout = no data, normal
+        except ConnectionClosed:
+            raise  # WS chết rõ ràng → main() reconnect ngay
         if isinstance(r, bytes):
             br = BR(r)
             cmd = br.rc()
