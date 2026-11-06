@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cookie: [ck1, ck2, ck3, ck5, ck6, ck7, ck8, ck9, ck10, ck11, ck12, ck13, ck14, ck15, ck20, ck21, ck30, ck31, ck32, ck33, ck34, ck35, ck36]
+        cookie: [ck1, ck2, ck3, ck4, ck5, ck6, ck7, ck8, ck9, ck10, ck11, ck12, ck13, ck14, ck15]
     steps:
       - uses: actions/checkout@v4
 
