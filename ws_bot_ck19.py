@@ -110,6 +110,19 @@ class WSBot:
         except Exception:
             raise  # connection dead → reconnect
 
+    async def _keepalive_loop(self):
+        """Background task: gửi game-protocol PING định kỳ mỗi 15s suốt vòng đời kết nối.
+        Chống server đóng WS do idle khi bot đang chờ/claim lâu."""
+        while True:
+            try:
+                await asyncio.sleep(15)
+                await self.keepalive_ping()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                # WS đang chết → để outer loop phát hiện và reconnect
+                return
+
     async def wait_with_keepalive(self, seconds):
         """Sleep for N seconds while handling PING/PONG. 
         Sends PING every 15s. Raises on connection death."""
@@ -630,136 +643,143 @@ async def main():
     # Outer loop: reconnect if WS dies
     while time.time() < deadline and reconnect_count < MAX_RECONNECTS:
         try:
-            async with websockets.connect(ws_url, ping_interval=None, max_size=2**20, open_timeout=15) as ws:
+            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=60, max_size=2**20, open_timeout=15) as ws:
                 bot = WSBot(ws)
-                await bot.login_replay(login_frames)
-                await bot.enter_lobby()
-                await bot.read_balance()
-                log(f"\nBalance: {bot.balance:,} (reconnects: {reconnect_count})")
-                reconnect_count = 0
+                keepalive_task = asyncio.create_task(bot._keepalive_loop())
+                try:
+                    await bot.login_replay(login_frames)
+                    await bot.enter_lobby()
+                    await bot.read_balance()
+                    log(f"\nBalance: {bot.balance:,} (reconnects: {reconnect_count})")
+                    reconnect_count = 0
 
-                while time.time() < deadline:
-                    cycle += 1
-                    log(f"\n{'='*40} CYCLE {cycle} {'='*40}")
+                    while time.time() < deadline:
+                        cycle += 1
+                        log(f"\n{'='*40} CYCLE {cycle} {'='*40}")
 
-                    # Phase 1: CLAIM
-                    if 0 < bot.balance < args.claim_min:
-                        log(f"\n[Phase 1] Claim until {args.claim_min:,} xu...")
-                        claims_ok, claimed = await bot.claim_until_threshold(
-                            args.claim_min, args.claim_max, args.max_claims)
-                        total_claimed += claimed
-                    elif bot.balance >= args.claim_min:
-                        log(f"\n[Phase 1] Balance {bot.balance:,} ≥ {args.claim_min:,} — go surrender")
-                    else:
-                        log(f"\n[Phase 1] Balance unknown — try claim...")
-                        claims_ok, claimed = await bot.claim_until_threshold(
-                            args.claim_min, args.claim_max, args.max_claims)
-                        total_claimed += claimed
+                        # Phase 1: CLAIM
+                        if 0 < bot.balance < args.claim_min:
+                            log(f"\n[Phase 1] Claim until {args.claim_min:,} xu...")
+                            claims_ok, claimed = await bot.claim_until_threshold(
+                                args.claim_min, args.claim_max, args.max_claims)
+                            total_claimed += claimed
+                        elif bot.balance >= args.claim_min:
+                            log(f"\n[Phase 1] Balance {bot.balance:,} ≥ {args.claim_min:,} — go surrender")
+                        else:
+                            log(f"\n[Phase 1] Balance unknown — try claim...")
+                            claims_ok, claimed = await bot.claim_until_threshold(
+                                args.claim_min, args.claim_max, args.max_claims)
+                            total_claimed += claimed
 
-                    # WS dead detection: balance < claim_min AND VIDEO_REWARD blocked
-                    if 0 < bot.balance < args.claim_min:
-                        log(f"\n[RECONNECT] Balance {bot.balance:,} < {args.claim_min:,}, claim blocked → WS dead?")
-                        reconnect_count += 1
-                        break  # exit inner loop → outer reconnects
+                        # WS dead detection: balance < claim_min AND VIDEO_REWARD blocked
+                        if 0 < bot.balance < args.claim_min:
+                            log(f"\n[RECONNECT] Balance {bot.balance:,} < {args.claim_min:,}, claim blocked → WS dead?")
+                            reconnect_count += 1
+                            break  # exit inner loop → outer reconnects
 
-                    # Phase 2: FIND TARGET
-                    log(f"\n[Phase 2] Find target '{args.target_name}'...")
-                    table_id = None
-                    for sa in range(3):
-                        table_id = await bot.find_target_table(args.target_name, args.target_id)
-                        if table_id: break
-                        if sa < 2:
-                            log(f"  Retry scan in 20s... ({sa+1}/3)")
-                            await asyncio.sleep(20)
-                    if not table_id:
-                        log(f"  Target not found — next cycle")
-                        await asyncio.sleep(15)
-                        continue
+                        # Phase 2: FIND TARGET
+                        log(f"\n[Phase 2] Find target '{args.target_name}'...")
+                        table_id = None
+                        for sa in range(3):
+                            table_id = await bot.find_target_table(args.target_name, args.target_id)
+                            if table_id: break
+                            if sa < 2:
+                                log(f"  Retry scan in 20s... ({sa+1}/3)")
+                                await asyncio.sleep(20)
+                        if not table_id:
+                            log(f"  Target not found — next cycle")
+                            await asyncio.sleep(15)
+                            continue
 
-                    # Phase 3: JOIN — returns 'seated', 'spectating', or False
-                    log(f"\n[Phase 3] Join table {table_id}...")
-                    join_status = await bot.join_table(table_id)
-                    if not join_status:
-                        log(f"  Join failed — next cycle")
-                        await asyncio.sleep(10)
-                        continue
+                        # Phase 3: JOIN — returns 'seated', 'spectating', or False
+                        log(f"\n[Phase 3] Join table {table_id}...")
+                        join_status = await bot.join_table(table_id)
+                        if not join_status:
+                            log(f"  Join failed — next cycle")
+                            await asyncio.sleep(10)
+                            continue
 
-                    # Phase 4: SURRENDER — only if SEATED
-                    surrender_done = False
-                    for att in range(5):
-                        if join_status == "spectating":
-                            log(f"  [SPECTATING] Chờ seat/game... (attempt {att+1}/5)")
-                            spec_deadline = time.time() + 120
-                            got_event = False
-                            while time.time() < spec_deadline:
-                                cmd, br, raw = await bot.recv_cmd(timeout=3)
-                                if cmd is None: continue
-                                if cmd == "PING": await bot.send_pong()
-                                elif cmd == "START_MATCH":
-                                    log(f"  Game started -> wait GAMEOVER")
-                                    go_deadline = time.time() + 300
-                                    while time.time() < go_deadline:
-                                        c2, b2, r2 = await bot.recv_cmd(timeout=3)
-                                        if c2 is None: continue
-                                        if c2 == "PING": await bot.send_pong()
-                                        elif c2 == "GAMEOVER":
-                                            log(f"  GAMEOVER -> re-join")
-                                            got_event = True
-                                            break
-                                        elif c2 == "BALANCE_CHANGED" and b2 and b2.rem() >= 9:
-                                            bot.slot = b2.i8(); bot.balance = b2.i64()
-                                elif cmd == "PLAYER_EXITED":
-                                    log(f"  Player exited -> re-join (seat free!)")
-                                    got_event = True
-                                    break
-                                elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
-                                    bot.slot = br.i8(); bot.balance = br.i64()
-                                    if bot.slot >= 0:
-                                        log(f"  Got seat! slot={bot.slot}")
+                        # Phase 4: SURRENDER — only if SEATED
+                        surrender_done = False
+                        for att in range(5):
+                            if join_status == "spectating":
+                                log(f"  [SPECTATING] Chờ seat/game... (attempt {att+1}/5)")
+                                spec_deadline = time.time() + 120
+                                got_event = False
+                                while time.time() < spec_deadline:
+                                    cmd, br, raw = await bot.recv_cmd(timeout=3)
+                                    if cmd is None: continue
+                                    if cmd == "PING": await bot.send_pong()
+                                    elif cmd == "START_MATCH":
+                                        log(f"  Game started -> wait GAMEOVER")
+                                        go_deadline = time.time() + 300
+                                        while time.time() < go_deadline:
+                                            c2, b2, r2 = await bot.recv_cmd(timeout=3)
+                                            if c2 is None: continue
+                                            if c2 == "PING": await bot.send_pong()
+                                            elif c2 == "GAMEOVER":
+                                                log(f"  GAMEOVER -> re-join")
+                                                got_event = True
+                                                break
+                                            elif c2 == "BALANCE_CHANGED" and b2 and b2.rem() >= 9:
+                                                bot.slot = b2.i8(); bot.balance = b2.i64()
+                                    elif cmd == "PLAYER_EXITED":
+                                        log(f"  Player exited -> re-join (seat free!)")
                                         got_event = True
                                         break
-                                    if bot.balance > 0:
-                                        log(f"  [spec] balance: {bot.balance:,}")
-                            if not got_event:
-                                log(f"  No event in 120s -> next cycle")
-                                break
-                            await bot.wait_with_keepalive(3)
-                            join_status = await bot.join_table(table_id)
-                            if join_status == "seated":
-                                log(f"  Got seat after wait!")
-                            elif not join_status:
-                                log(f"  Re-join failed -> next cycle")
-                                break
-
-                        if join_status == "seated":
-                            log(f"  [Phase 4] Surrender (attempt {att+1}/5)...")
-                            status, lost = await bot.ready_wait_surrender(deadline)
-                            if status == "surrendered":
-                                total_surrendered += lost
-                                log(f"  Cycle {cycle}: surrendered {lost:,} xu")
-                                surrender_done = True
-                                break
-                            elif status == "spectating":
-                                join_status = "spectating"
-                                continue
-                            elif status == "timeout":
-                                log(f"  Timeout -> re-join")
-                                await bot.wait_with_keepalive(5)
+                                    elif cmd == "BALANCE_CHANGED" and br and br.rem() >= 9:
+                                        bot.slot = br.i8(); bot.balance = br.i64()
+                                        if bot.slot >= 0:
+                                            log(f"  Got seat! slot={bot.slot}")
+                                            got_event = True
+                                            break
+                                        if bot.balance > 0:
+                                            log(f"  [spec] balance: {bot.balance:,}")
+                                if not got_event:
+                                    log(f"  No event in 120s -> next cycle")
+                                    break
+                                await bot.wait_with_keepalive(3)
                                 join_status = await bot.join_table(table_id)
-                                if not join_status: break
+                                if join_status == "seated":
+                                    log(f"  Got seat after wait!")
+                                elif not join_status:
+                                    log(f"  Re-join failed -> next cycle")
+                                    break
+
+                            if join_status == "seated":
+                                log(f"  [Phase 4] Surrender (attempt {att+1}/5)...")
+                                status, lost = await bot.ready_wait_surrender(deadline)
+                                if status == "surrendered":
+                                    total_surrendered += lost
+                                    log(f"  Cycle {cycle}: surrendered {lost:,} xu")
+                                    surrender_done = True
+                                    break
+                                elif status == "spectating":
+                                    join_status = "spectating"
+                                    continue
+                                elif status == "timeout":
+                                    log(f"  Timeout -> re-join")
+                                    await bot.wait_with_keepalive(5)
+                                    join_status = await bot.join_table(table_id)
+                                    if not join_status: break
 
 
-                    # Return to lobby
-                    ret = BW(); ret.wc("ENTER_PLACE"); ret.wa("Lobby.caro.0"); ret.wu(""); ret.i8(1)
-                    await bot.send(ret.build())
-                    await bot.drain(3)
+                        # Return to lobby
+                        ret = BW(); ret.wc("ENTER_PLACE"); ret.wa("Lobby.caro.0"); ret.wu(""); ret.i8(1)
+                        await bot.send(ret.build())
+                        await bot.drain(3)
 
-                    remaining = deadline - time.time()
-                    if remaining < 30:
-                        log(f"\n[Runtime] {remaining:.0f}s left — stopping")
-                        break
-                    await bot.wait_with_keepalive(5)
-
+                        remaining = deadline - time.time()
+                        if remaining < 30:
+                            log(f"\n[Runtime] {remaining:.0f}s left — stopping")
+                            break
+                        await bot.wait_with_keepalive(5)
+                finally:
+                    keepalive_task.cancel()
+                    try:
+                        await keepalive_task
+                    except Exception:
+                        pass
         except Exception as e:
             reconnect_count += 1
             log(f"\n[WS ERROR] {type(e).__name__}: {e} → reconnect {reconnect_count}/{MAX_RECONNECTS}")
