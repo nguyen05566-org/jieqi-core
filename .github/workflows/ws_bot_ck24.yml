@@ -1,0 +1,57 @@
+name: ws_bot_ck24
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_name:
+        description: 'Target name'
+        required: false
+        default: 'nguyen123456'
+      claim_min:
+        description: 'Claim min (xu)'
+        required: false
+        default: '40000'
+      bot_runtime:
+        description: 'Runtime seconds'
+        required: false
+        default: '21600'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ws-bot-ck24
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 370
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install websockets
+      - name: Check token
+        id: check
+        run: |
+          if [ -f state/tokens/ck24_token.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "No token for ck24"
+          fi
+      - name: Run bot
+        if: steps.check.outputs.exists == 'true'
+        env:
+          TARGET_NAME: ${{ inputs.target_name || 'nguyen123456' }}
+          TARGET_ID: '68982512'
+          CLAIM_MIN: ${{ inputs.claim_min || '40000' }}
+          CLAIM_MAX: '50000'
+          BET_ID: '10'
+          MAX_CLAIMS: '100'
+          RUNTIME_SECONDS: ${{ inputs.bot_runtime || '21600' }}
+        run: |
+          echo "=== ws_bot ck24 ==="
+          python3 ws_bot_ck24.py --token-file state/tokens/ck24_token.json
