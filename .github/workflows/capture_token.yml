@@ -20,7 +20,6 @@ concurrency:
 jobs:
   capture:
     runs-on: ubuntu-latest
-    if: ${{ inputs.cookie_file == 'all' || inputs.cookie_file == matrix.cookie || inputs.cookie_file == format('{0}.txt', matrix.cookie) }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -42,6 +41,12 @@ jobs:
       - name: Check cookie file exists
         id: check
         run: |
+          INPUT_CF="${{ inputs.cookie_file || 'all' }}"
+          if [ "$INPUT_CF" != "all" ] && [ "$INPUT_CF" != "${{ matrix.cookie }}" ] && [ "$INPUT_CF" != "${{ matrix.cookie }}.txt" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Skipped: input $INPUT_CF != ${{ matrix.cookie }}"
+            exit 0
+          fi
           if [ ! -f ${{ matrix.cookie }}.txt ]; then
             echo "exists=false" >> $GITHUB_OUTPUT
           else
