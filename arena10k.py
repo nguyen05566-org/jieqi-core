@@ -105,13 +105,6 @@ EMBRYO_MOVE_TIMEOUT = 15.0  # giây – timeout cứng cho toàn bộ khâu tín
 EMBRYO_MATCH_TIMEOUT = 1800000  # 1800s = 30 phút - theo BOT_MATCH_DURATION = '1800'
 EMBRYO_VERSION = "1.2.3"  # Embryo Caro6 engine version
 
-# ==== Rapfi WASM (thay Embryo): map bàn game 15x19 vào engine vuông 19x19 ====
-# Tọa độ game (x,y) -> engine (x+2,y). Cột 0,1,17,18 của engine là viền giả:
-# lấp 76 ô đá đếm cân bằng 38 đen/38 trắng để parity suy luận lượt không vỡ.
-RAPFI_XOFF = 2
-RAPFI_WALL_X = (0, 1, 17, 18)
-RAPFI_WALL_CELLS = [(wx, wy) for wx in RAPFI_WALL_X for wy in range(19)]
-
 def auto_download_embryo() -> Optional[str]:
     binary_path = ENGINE_DIR / EMBRYO_BINARY
     if binary_path.exists():
@@ -191,7 +184,7 @@ def _validate_embryo_binary(path: Path) -> bool:
         return False
     try:
         size = path.stat().st_size
-        if size < 50:  # Chống file rác; shim node (~65B) vẫn pass
+        if size < 1000:  # Too small to be a real engine
             return False
         with open(path, "rb") as f:
             header = f.read(4)
@@ -199,8 +192,8 @@ def _validate_embryo_binary(path: Path) -> bool:
             # Windows PE: MZ header
             return header[:2] == b"MZ"
         else:
-            # Linux ELF hoặc script (#!) — shim node rapfi
-            return header == b"\x7fELF" or header[:2] == b"#!"
+            # Linux ELF: \x7fELF
+            return header == b"\x7fELF"
     except Exception:
         return False
 
@@ -320,17 +313,18 @@ class EmbryoEngine:
                     log.info(f"[Embryo] RESTART response: '{line}'")
                     if line.upper() == "OK":
                         break
-                self._send("START 19")  # Rapfi: bàn vuông 19x19 (map từ 15x19)
+                self._send("RECTSTART 15,19")
                 for _ in range(5):
                     line = self._read_line(timeout=0.5)
-                    log.info(f"[Engine] START response: '{line}'")
+                    log.info(f"[Embryo] RECTSTART response: '{line}'")
                     if line.upper() == "OK":
                         break
                 self._synced = False
                 self._send_time_infos()
+                self._send("INFO ponder 1")
                 self.my_side = my_symbol
                 self._initialized = True
-                log.info("[Engine] RESTART + START 19 (rapfi-wasm)")
+                log.info("[Embryo] RESTART + RECTSTART (opening book active)")
                 return True
 
             self._synced = False
@@ -342,18 +336,19 @@ class EmbryoEngine:
                 cmd = [self.binary]
                 self.proc = subprocess.Popen(
                     cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, cwd=str(ENGINE_DIR)
+                    stderr=subprocess.DEVNULL, cwd=str(ENGINE_DIR)
                 )
                 self._buffer = bytearray()
                 self._init_selector()
                 self.my_side = my_symbol
-                self._send("START 19")  # Rapfi: bàn vuông 19x19 (map từ 15x19)
+                self._send("RECTSTART 15,19")
                 self._rectstart_sent = True
                 for _ in range(10):
                     line = self._read_line(timeout=1.0)
                     if line.upper() == "OK":
                         break
                 self._send_time_infos()
+                self._send("INFO ponder 1")
                 time.sleep(0.2)
                 self._drain_output()
                 self._initialized = True
@@ -382,7 +377,7 @@ class EmbryoEngine:
                     log.warning("[Embryo] RESTART did not receive OK")
                     self._synced = False
                     return False
-                self._send("START 19")  # Rapfi: bàn vuông 19x19 (map từ 15x19)
+                self._send("RECTSTART 15,19")
                 got_ok = False
                 for _ in range(5):
                     line = self._read_line(timeout=2.0)
@@ -390,11 +385,12 @@ class EmbryoEngine:
                         got_ok = True
                         break
                 if not got_ok:
-                    log.warning("[Engine] START 19 did not receive OK")
+                    log.warning("[Embryo] RECTSTART did not receive OK")
                     self._synced = False
                     return False
                 self._synced = False
                 self._send_time_infos()
+                self._send("INFO ponder 1")
                 log.info("[Embryo] RESTART + ponder OK (opening book active)")
                 return True
             except Exception as e:
@@ -420,49 +416,46 @@ class EmbryoEngine:
                 _sync_state = getattr(self, "_synced", False)
                 _hist_len = len(board_history)
                 _exp_len = getattr(self, "_expected_history_len", -1)
-                can_use_turn = False  # Rapfi: luôn BOARD-sync full (map 15x19 -> 19x19)
+                can_use_turn = _sync_state and _hist_len == _exp_len + 1
+                if not can_use_turn:
+                    log.info(f"[Embryo] sync debug: synced={_sync_state} hist={_hist_len} exp={_exp_len} can_turn={can_use_turn}")
 
-                # Rapfi chỉ chơi bàn vuông 19x19: map (x,y)->(x+2,y). Nước engine
-                # rơi ngoài vùng thật (engine x<2 hoặc x>16) -> resync hỏi lại.
-                MAX_ATTEMPTS = 4
-                for attempt in range(1, MAX_ATTEMPTS + 1):
-                    if attempt > 1:
-                        log.info(f"[Embryo] Resync hỏi lại nước (lần {attempt}/{MAX_ATTEMPTS})")
+                if can_use_turn:
+                    last_x, last_y, _ = board_history[-1]
+                    self._send(f"TURN {last_x},{last_y}")
+                else:
                     self._send("BOARD")
                     for (x, y, sym) in board_history:
                         c = 1 if sym == self.my_side else 2
-                        self._send(f"{x + RAPFI_XOFF},{y},{c}")
+                        self._send(f"{x},{y},{c}")
                     self._send("DONE")
 
-                    deadline = time.monotonic() + (self.timeout_turn / 1000.0) + 2.0
-                    retry_move = False
-                    move_count = 0
-                    while time.monotonic() < deadline:
-                        rem_time = deadline - time.monotonic()
-                        line = self._read_line(timeout=min(0.1, rem_time))
-                        if not line:
+                deadline = time.monotonic() + (self.timeout_turn / 1000.0) + 2.0
+                move_count = 0
+                while time.monotonic() < deadline:
+                    rem_time = deadline - time.monotonic()
+                    line = self._read_line(timeout=min(0.1, rem_time))
+                    if not line:
+                        continue
+                    if line.startswith(("MESSAGE", "ERROR", "DEBUG")):
+                        log.info(f"[Embryo] engine msg: {line}")
+                        continue
+                    match = re.match(r"^\s*(\d+)\s*,\s*(\d+)\s*$", line)
+                    if match:
+                        mx, my = int(match.group(1)), int(match.group(2))
+                        if not (0 <= mx < self.board_width and 0 <= my < self.board_height):
+                            log.warning(f"[Embryo] Bỏ qua nước ngoài bàn: {mx},{my}")
                             continue
-                        if line.startswith(("MESSAGE", "ERROR", "DEBUG")):
-                            log.info(f"[Embryo] engine msg: {line}")
-                            continue
-                        match = re.match(r"^\s*(\d+)\s*,\s*(\d+)\s*$", line)
-                        if match:
-                            ex, my = int(match.group(1)), int(match.group(2))
-                            mx = ex - RAPFI_XOFF  # dịch ngược về tọa độ game
-                            if not (0 <= mx < self.board_width and 0 <= my < self.board_height):
-                                log.warning(f"[Embryo] Bỏ qua nước ngoài bàn: engine({ex},{my}) -> game({mx},{my})")
-                                retry_move = True
-                                break
-                            think_ms = int((time.monotonic() - t0) * 1000)
-                            move_count += 1
-                            if move_count > 1:
-                                log.warning(f"[Embryo] Nhận {move_count} nước, dùng nước cuối: {mx},{my}")
-                            self.time_left_ms = max(self.time_left_ms - think_ms, self.timeout_turn)
-                            log.info(f"[Embryo] Move=({mx},{my}) think={think_ms}ms (max 5s) [attempt={attempt}]")
-                            return mx, my
-                    if not retry_move:
-                        break  # timeout hẳn -> trả None để fallback
-                log.warning("[Embryo] Không nhận được nước hợp lệ sau các lần resync")
+                        think_ms = int((time.monotonic() - t0) * 1000)
+                        move_count += 1
+                        if move_count > 1:
+                            log.warning(f"[Embryo] Nhận {move_count} nước, dùng nước cuối: {mx},{my}")
+                        self._synced = True
+                        self._expected_history_len = len(board_history) + 1
+                        self.time_left_ms = max(self.time_left_ms - think_ms, self.timeout_turn)
+                        log.info(f"[Embryo] Move=({mx},{my}) think={think_ms}ms (max 5s) [sync={'T' if can_use_turn else 'F'}]")
+                        return mx, my
+                log.warning("[Embryo] Timeout — engine không trả kết quả")
                 return None
             except Exception as e:
                 log.warning(f"[Embryo] get_move error: {e}")
@@ -843,73 +836,6 @@ class CaroBot:
         self.opponent_symbol = CROSS if self.my_symbol == CIRCLE else CIRCLE
         log.info(f"Slot={self.slot} Me={'X' if self.my_symbol == CROSS else 'O'}")
 
-    # ========== LUẬT CARO gamevh (chặn 2 đầu): lọc nước engine "tưởng ăn" ==========
-    # O = CIRCLE (đi trước): chỉ thắng khi tạo ĐÚNG 5 và không bị chặn cả 2 đầu.
-    # X = CROSS (đi sau): thắng 5+ bất kể chặn.
-    DIRS = ((1, 0), (0, 1), (1, 1), (1, -1))
-
-    def _line_info(self, x, y, sym, dx, dy):
-        """Giả đặt sym tại (x,y): trả (n, open1, open2) theo hướng."""
-        n, e1, e2, i = 1, False, False, 1
-        while True:
-            s = self.board.get(x + dx * i, y + dy * i)
-            if s == sym: n += 1; i += 1; continue
-            e1 = (s == EMPTY); break
-        i = 1
-        while True:
-            s = self.board.get(x - dx * i, y - dy * i)
-            if s == sym: n += 1; i += 1; continue
-            e2 = (s == EMPTY); break
-        return n, e1, e2
-
-    def _is_real_win(self, x, y, sym):
-        """Ô (x,y) trống: nếu đi sym có phải nước THẮNG thật theo luật caro."""
-        for dx, dy in self.DIRS:
-            n, e1, e2 = self._line_info(x, y, sym, dx, dy)
-            if n >= 5:
-                if sym == CROSS: return True           # X: 5+ luôn thắng
-                if n == 5 and (e1 or e2): return True  # O: đúng 5, còn đầu mở
-        return False
-
-    def _is_fake_win_for_me(self, x, y):
-        """Nước tạo 5+ nhưng KHÔNG thắng (chỉ áp dụng khi tôi là O đi trước)."""
-        if self.my_symbol == CROSS: return False
-        for dx, dy in self.DIRS:
-            n, e1, e2 = self._line_info(x, y, self.my_symbol, dx, dy)
-            if n >= 5 and not (n == 5 and (e1 or e2)):
-                return True
-        return False
-
-    def _pick_caro_alternative(self, exclude):
-        """Nước thay thế khi engine chọn nước fake-win:
-        1) nước thắng thật của mình  2) chặn nước thắng thật của đối thủ
-        3) ô maximize độ dài dòng của mình (tránh fake-win)."""
-        # 1. thắng thật
-        for y in range(self.board.height):
-            for x in range(self.board.width):
-                if self.board.get(x, y) == EMPTY and (x, y) not in exclude \
-                        and self._is_real_win(x, y, self.my_symbol):
-                    log.info("[CARO] Tìm thấy nước thắng thật thay thế")
-                    return (x, y)
-        # 2. chặn đối thủ
-        for y in range(self.board.height):
-            for x in range(self.board.width):
-                if self.board.get(x, y) == EMPTY and (x, y) not in exclude \
-                        and self._is_real_win(x, y, self.opponent_symbol):
-                    log.info("[CARO] Chặn nước thắng của đối thủ thay vì fake-win")
-                    return (x, y)
-        # 3. maximize dòng của mình, phạt fake-win
-        best, best_score = None, -1
-        for y in range(self.board.height):
-            for x in range(self.board.width):
-                if self.board.get(x, y) != EMPTY or (x, y) in exclude: continue
-                score = max(self._line_info(x, y, self.my_symbol, dx, dy)[0]
-                            for dx, dy in self.DIRS)
-                if self._is_fake_win_for_me(x, y): score -= 10
-                if score > best_score:
-                    best, best_score = (x, y), score
-        return best
-
     def make_login(self) -> bytes:
         w = BinaryWriter(); w.write_command("LOGIN"); w.write_ascii(self.nickname)
         w.i32(self.token); w.write_ascii(VERSION); w.write_ascii(self.lock_key)
@@ -1006,12 +932,6 @@ class CaroBot:
                     if (move and 0 <= move[0] < self.board.width and 0 <= move[1] < self.board.height
                         and self.board.get(*move) == EMPTY):
                         x, y = move; self.embryo_moves += 1
-                        if self._is_fake_win_for_me(x, y):
-                            log.warning(
-                                f"[CARO] Nước engine ({x},{y}) tạo 5 KHÔNG thắng theo luật caro "
-                                f"(chặn 2 đầu/overline) → chọn nước thay thế")
-                            alt = self._pick_caro_alternative(exclude={(x, y)})
-                            if alt: x, y = alt
                     else:
                         self.embryo_errors += 1
                         log.warning(f"[Embryo] Nước không hợp lệ: {move}, fallback gần nước cuối + hard reset")
