@@ -318,7 +318,8 @@ class EmbryoEngine:
                     log.info(f"[Embryo] RESTART response: '{line}'")
                     if line.upper() == "OK":
                         break
-                self._send("START 19")  # Rapfi: bàn vuông 19x19 (map từ 15x19)
+                self._send("INFO rule 8")  # AlphaGomoku: CARO6 (luật caro gamevh)
+                self._send("START 20")  # bàn vuông 20x20 (map từ 15x19)
                 for _ in range(5):
                     line = self._read_line(timeout=0.5)
                     log.info(f"[Engine] START response: '{line}'")
@@ -328,7 +329,7 @@ class EmbryoEngine:
                 self._send_time_infos()
                 self.my_side = my_symbol
                 self._initialized = True
-                log.info("[Engine] RESTART + START 19 (rapfi-wasm)")
+                log.info("[Engine] RESTART + START 20 + rule 8 (alphagomoku)")
                 return True
 
             self._synced = False
@@ -345,7 +346,8 @@ class EmbryoEngine:
                 self._buffer = bytearray()
                 self._init_selector()
                 self.my_side = my_symbol
-                self._send("START 19")  # Rapfi: bàn vuông 19x19 (map từ 15x19)
+                self._send("INFO rule 8")  # AlphaGomoku: CARO6 (luật caro gamevh)
+                self._send("START 20")  # bàn vuông 20x20 (map từ 15x19)
                 self._rectstart_sent = True
                 for _ in range(10):
                     line = self._read_line(timeout=1.0)
@@ -380,7 +382,8 @@ class EmbryoEngine:
                     log.warning("[Embryo] RESTART did not receive OK")
                     self._synced = False
                     return False
-                self._send("START 19")  # Rapfi: bàn vuông 19x19 (map từ 15x19)
+                self._send("INFO rule 8")  # AlphaGomoku: CARO6 (luật caro gamevh)
+                self._send("START 20")  # bàn vuông 20x20 (map từ 15x19)
                 got_ok = False
                 for _ in range(5):
                     line = self._read_line(timeout=2.0)
