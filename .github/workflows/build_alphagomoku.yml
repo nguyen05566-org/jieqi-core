@@ -1,0 +1,76 @@
+name: build_alphagomoku
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+      - name: Clone MinML
+        run: git clone --depth 1 --branch v1.0.0 https://github.com/MaciejKozarzewski/minml minml || git clone --depth 1 https://github.com/MaciejKozarzewski/minml minml
+      - name: Clone AlphaGomoku source
+        run: git clone --depth 1 --branch v5.9.3 https://github.com/MaciejKozarzewski/AlphaGomoku ag-src
+      - name: Patch sources (unlock CARO6 on 20x20)
+        run: |
+          python3 - <<'PYEOF'
+          f = 'ag-src/src/player/ProgramManager.cpp'
+          src = open(f).read()
+          old = """			case GameRules::STANDARD:
+			case GameRules::RENJU:
+			case GameRules::CARO5:
+			case GameRules::CARO6:
+				return board_size_equal_to(cfg, 15);"""
+          new = """			case GameRules::STANDARD:
+			case GameRules::RENJU:
+				return board_size_equal_to(cfg, 15);
+			case GameRules::CARO5:
+			case GameRules::CARO6:
+				return board_size_equal_to(cfg, 15) or board_size_equal_to(cfg, 20);"""
+          assert old in src, 'ProgramManager pattern not found'
+          open(f, 'w').write(src.replace(old, new))
+          f = 'ag-src/src/player/EngineSettings.cpp'
+          src = open(f).read()
+          old = """		add_path(path_to_conv_networks, GameRules::CARO5, 15, config["conv_networks"]["caro5"].getString());
+		add_path(path_to_conv_networks, GameRules::CARO6, 15, config["conv_networks"]["caro6"].getString());"""
+          new = old + """
+		add_path(path_to_conv_networks, GameRules::CARO5, 20, config["conv_networks"]["caro5"].getString());
+		add_path(path_to_conv_networks, GameRules::CARO6, 20, config["conv_networks"]["caro6"].getString());"""
+          assert old in src, 'EngineSettings pattern not found'
+          open(f, 'w').write(src.replace(old, new))
+          print('patched')
+          PYEOF
+      - name: Build MinML (CPU)
+        run: |
+          cd minml
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build -j$(nproc)
+          mkdir -p build/cpu/Release/lib
+          cp build/lib/libMinML_cpu.a build/cpu/Release/lib/
+      - name: Build AlphaGomoku
+        run: |
+          cd ag-src
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DMINML_BACKEND_PATH=$GITHUB_WORKSPACE/minml
+          cmake --build build -j$(nproc) ag_player_cpu
+          cp build/bin/ag_player_cpu ../pbrain-AlphaGomoku
+      - name: Download config and networks
+        run: |
+          curl -sL https://github.com/MaciejKozarzewski/AlphaGomoku/releases/download/v5.9.3/AlphaGomoku_linux.zip -o rel.zip
+          unzip -o -q rel.zip config.json networks/*
+      - name: Package artifact
+        run: |
+          mkdir -p package/networks
+          cp pbrain-AlphaGomoku config.json package/
+          cp networks/caro6_conv_8x128.bin networks/caro5_conv_8x128.bin package/networks/
+          tar czf alphagomoku_caro6_20x20.tar.gz -C package .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alphagomoku-caro6-20x20
+          path: alphagomoku_caro6_20x20.tar.gz
+          retention-days: 7
