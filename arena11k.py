@@ -101,7 +101,7 @@ else:
     )
     EMBRYO_ARCHIVE = "bz2"
 EMBRYO_TIMEOUT = 2000  # 2 giây (trần tối đa 2s/nước)
-EMBRYO_MOVE_TIMEOUT = 15.0  # giây – timeout cứng cho toàn bộ khâu tính nước (chống treo engine)
+EMBRYO_MOVE_TIMEOUT = 50.0  # giây – nới cho alphagomoku qua qemu (server cho 60s/nước)
 EMBRYO_MATCH_TIMEOUT = 1800000  # 1800s = 30 phút - theo BOT_MATCH_DURATION = '1800'
 EMBRYO_VERSION = "1.2.3"  # Embryo Caro6 engine version
 
@@ -435,7 +435,7 @@ class EmbryoEngine:
                         self._send(f"{x + RAPFI_XOFF},{y},{c}")
                     self._send("DONE")
 
-                    deadline = time.monotonic() + (self.timeout_turn / 1000.0) + 2.0
+                    deadline = time.monotonic() + max(self.timeout_turn / 1000.0, 45.0) + 2.0
                     retry_move = False
                     move_count = 0
                     while time.monotonic() < deadline:

@@ -1,2 +1,11 @@
 #!/bin/sh
-exec node "$(dirname "$0")/rapfi/pbrain-rapfi.js" "$@"
+# Shim: chọn engine backend — AlphaGomoku (rule 8/CARO6, bàn vuông 20x20)
+# x86_64 chạy native (CI); aarch64 chạy qua qemu với sysroot riêng (local).
+DIR="$(cd "$(dirname "$0")" && pwd)"
+AG="$DIR/alphagomoku/pbrain-AlphaGomoku"
+if [ "$(uname -m)" = "x86_64" ]; then
+  cd "$DIR/alphagomoku" && exec ./pbrain-AlphaGomoku
+else
+  SYSROOT="${AG_SYSROOT:-/tmp/kilo/sysroot}"
+  cd "$DIR/alphagomoku" && exec qemu-x86_64 -L "$SYSROOT" ./pbrain-AlphaGomoku
+fi
