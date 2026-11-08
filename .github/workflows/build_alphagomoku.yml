@@ -17,7 +17,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential
 
       - name: Clone MinML
-        run: git clone --depth 1 https://github.com/MaciejKozarzewski/minml minml
+        run: git clone https://github.com/MaciejKozarzewski/minml minml && cd minml && git checkout -q 0fb639f49e && cd ..
 
       - name: Clone AlphaGomoku source
         run: git clone --depth 1 --branch v5.9.3 https://github.com/MaciejKozarzewski/AlphaGomoku ag-src
