@@ -433,7 +433,7 @@ class EmbryoEngine:
                     for (x, y, sym) in board_history:
                         c = 1 if sym == self.my_side else 2
                         self._send(f"{x + RAPFI_XOFF},{y},{c}")
-                    self._send("DONE")
+                    self._send("done")  # AlphaGomoku parse DONE case-sensitive
 
                     deadline = time.monotonic() + max(self.timeout_turn / 1000.0, 45.0) + 2.0
                     retry_move = False
