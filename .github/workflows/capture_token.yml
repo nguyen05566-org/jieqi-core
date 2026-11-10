@@ -7,8 +7,7 @@ on:
         description: 'Cookie file (e.g. ck1.txt, or "all" for all)'
         required: false
         default: 'all'
-  schedule:
-    - cron: '0 */6 * * *'  # mỗi 6h
+    # mỗi 6h
 
 permissions:
   contents: write
