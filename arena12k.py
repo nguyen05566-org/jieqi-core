@@ -312,31 +312,51 @@ def auto_download_alphagomoku() -> Optional[str]:
         log.error(f"[AG] Download failed: {e}")
         return None
 
-def compute_window(board_history: list, board_width: int, board_height: int) -> int:
-    """Cửa sổ trượt 15x15 trên bàn 15x19. Trả về offset y (wy) của cửa sổ."""
-    if board_height <= ALPHA_WIN:
+def compute_window(board_history: list, board_width: int, board_height: int,
+                   focus_y: Optional[int] = None) -> int:
+    """Cửa sổ trượt 15x15 trên bàn 15x19. Trả về offset y (wy) của cửa sổ.
+
+    - Span đá <= 15 hàng: phủ toàn bộ đá (canh tâm cụm đá).
+    - Span > 15 hàng: chọn cửa sổ BẮT BUỘC CHỨA nước đánh mới nhất (focus),
+      ưu tiên nhiều đá nhất, sau đó mới tới focus gần tâm cửa sổ.
+      focus_y = y của nước đánh mới nhất (thường là nước đối thủ vừa đánh).
+      KHÔNG dùng ys[-1] vì board.history bị load_rle dựng lại theo thứ tự
+      row-major (y tăng dần) → ys[-1] luôn là đá hàng dưới cùng.
+    """
+    win = ALPHA_WIN
+    if board_height <= win:
         return 0
-    if board_width > ALPHA_WIN:
-        return max(0, (board_height - ALPHA_WIN) // 2)
-    max_wy = board_height - ALPHA_WIN  # 19-15=4
+    if board_width > win:
+        return max(0, (board_height - win) // 2)
+    max_wy = board_height - win  # 19-15=4
     ys = [y for (_, y, _) in board_history]
     if not ys:
         return max_wy // 2
     lo, hi = min(ys), max(ys)
-    if hi - lo + 1 <= ALPHA_WIN:
+    if hi - lo + 1 <= win:
         # Phủ toàn bộ đá, ưu tiên canh tâm cụm đá
         center = (lo + hi) / 2.0
-        wy = int(round(center - (ALPHA_WIN - 1) / 2.0))
+        wy = int(round(center - (win - 1) / 2.0))
         wy = max(0, min(wy, max_wy))
         # Đảm bảo vẫn phủ hết span (clamp có thể lệch khi span sát mép)
-        wy = max(wy, min(max_wy, hi - ALPHA_WIN + 1))
+        wy = max(wy, min(max_wy, hi - win + 1))
         wy = min(wy, lo)
         wy = max(0, min(wy, max_wy))
         return wy
-    # Span quá 15 hàng → canh tâm vào nước cuối (focus động)
-    last_y = ys[-1]
-    wy = last_y - ALPHA_WIN // 2
-    return max(0, min(wy, max_wy))
+    # Span > cửa sổ → bắt buộc bỏ 1 phần đá.
+    # Bắt buộc chứa focus (nước đánh mới nhất) → luôn "bám theo" đối thủ.
+    if focus_y is None:
+        focus_y = ys[-1]
+    best_wy, best_key = 0, None
+    for wy in range(0, max_wy + 1):
+        if not (wy <= focus_y <= wy + win - 1):
+            continue
+        stones = sum(1 for y in ys if wy <= y <= wy + win - 1)
+        center_dist = abs(focus_y - (wy + (win - 1) / 2.0))
+        key = (stones, -center_dist)
+        if best_key is None or key > best_key:
+            best_key, best_wy = key, wy
+    return best_wy
 
 # ======================== ENGINE WRAPPER ========================
 class EmbryoEngine:
@@ -1138,6 +1158,7 @@ class CaroBot:
         self._ag_skip_until = 0.0        # tạm ngưng thử AG sau lỗi (không tải lại)
         self._ag_dl_skip_until = 0.0     # tạm ngưng tải lại package AG
         self._moving = False; self._last_move_xy = None
+        self._last_move_recv_xy = None   # nước đánh mới nhất nhận được (focus cửa sổ AG)
         self._embryo_reinit_attempts = 0
         self._embryo_reinit_cooldown_until = 0.0
         self._pending_opponent_moves = []
@@ -1414,7 +1435,8 @@ class CaroBot:
             engine_tag = "Embryo"
             if self.engine is not None and self.engine_kind == "ag":
                 engine_tag = "AG"
-                window_y = compute_window(history, self.board.width, self.board.height)
+                focus_y = self._last_move_recv_xy[1] if self._last_move_recv_xy else None
+                window_y = compute_window(history, self.board.width, self.board.height, focus_y)
                 try:
                     move = await asyncio.wait_for(
                         asyncio.get_event_loop().run_in_executor(
@@ -1669,6 +1691,7 @@ class CaroBot:
     async def handle_start(self, r: BinaryReader):
         self.total_games += 1; self.is_playing = True; self.ready = False; self.pending_move = False
         self._moving = False; self._last_move_xy = None
+        self._last_move_recv_xy = None
         self._pending_opponent_moves = []
         self.opponent_gone_at = None
         self._embryo_reinit_attempts = 0
@@ -1710,6 +1733,9 @@ class CaroBot:
     async def handle_move(self, r: BinaryReader):
         pos = r.i16(); symbol = r.i8()
         x, y = self.board.pos_to_xy(pos)
+        # Track nước đánh mới nhất (khi đến lượt ta thì đó là nước đối thủ)
+        # để cửa sổ trượt AG luôn bám theo khu vực đang diễn ra.
+        self._last_move_recv_xy = (x, y)
 
         current = self.board.get(x, y)
         if current == symbol:
