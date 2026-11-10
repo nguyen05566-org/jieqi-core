@@ -19,6 +19,10 @@ __pycache__/
 *.pyo
 *.egg-info/
 
+# Engine binaries (tự tải từ release, không commit)
+embryo-engine/
+alphagomoku-engine/
+
 # Editor / OS
 .vscode/
 .idea/

@@ -4,7 +4,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: build_alphagomoku
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -19,11 +23,8 @@ jobs:
       - name: Clone MinML
         run: git clone https://github.com/MaciejKozarzewski/minml minml && cd minml && git checkout -q 0fb639f49e && cd ..
 
-      - name: Clone AlphaGomoku source
+      - name: Clone AlphaGomoku source (vanilla v5.9.3, 15x15 + rule 8 CARO6)
         run: git clone --depth 1 --branch v5.9.3 https://github.com/MaciejKozarzewski/AlphaGomoku ag-src
-
-      - name: Patch sources (unlock CARO6 on 20x20)
-        run: python3 tools/patch_alphagomoku.py ag-src
 
       - name: Build MinML (CPU)
         run: |
@@ -45,15 +46,32 @@ jobs:
           curl -sL https://github.com/MaciejKozarzewski/AlphaGomoku/releases/download/v5.9.3/AlphaGomoku_linux.zip -o rel.zip
           unzip -o -q rel.zip config.json networks/*
 
-      - name: Package artifact
+      - name: Package artifact (CARO6 15x15)
         run: |
           mkdir -p package/networks
           cp pbrain-AlphaGomoku config.json package/
           cp networks/caro6_conv_8x128.bin networks/caro5_conv_8x128.bin package/networks/
-          tar czf alphagomoku_caro6_20x20.tar.gz -C package .
+          chmod +x package/pbrain-AlphaGomoku
+          tar czf alphagomoku_caro6_15x15.tar.gz -C package .
+
+      - name: Smoke test protocol (start 15, info rule 8)
+        run: |
+          cd package
+          chmod 755 pbrain-AlphaGomoku
+          printf 'about\nstart 15\ninfo rule 8\nrestart\nend\n' | timeout 60 ./pbrain-AlphaGomoku > out.txt 2> err.txt || true
+          cat out.txt err.txt
+          grep -q "OK" out.txt || (echo "Smoke test failed: no OK from start 15" && exit 1)
 
       - uses: actions/upload-artifact@v4
         with:
-          name: alphagomoku-caro6-20x20
-          path: alphagomoku_caro6_20x20.tar.gz
+          name: alphagomoku-caro6-15x15
+          path: alphagomoku_caro6_15x15.tar.gz
           retention-days: 7
+
+      - name: Publish to GitHub Release (persistent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="alphagomoku-15x15"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "AlphaGomoku CARO6 15x15 (vanilla v5.9.3)" --notes "pbrain-AlphaGomoku + config.json + networks (caro5/caro6). Build vanilla v5.9.3: START 15 + info rule 8 (CARO6), 15x15 only."
+          gh release upload "$TAG" alphagomoku_caro6_15x15.tar.gz --clobber

@@ -2,7 +2,10 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
 ║  BOT CARO EMBRYO - FULL NAME + AVATAR v3.0                     ║
-║  Engine: Embryo Caro6 v1.2.3 (Linux Native)                    ║
+║  Engine chính: AlphaGomoku v5.9.3 (15x15 + rule 8 CARO6)        ║
+║  - Cửa sổ trượt 15x15 phủ trên bàn game 15x19 (gamevh)          ║
+║  - Binary từ GitHub Release tag alphagomoku-15x15               ║
+║  Engine dự phòng: Embryo Caro6 v1.2.3 (Linux Native)           ║
 ║  FIX: Chỉ Ready khi đối thủ ngồi vào ghế, hủy khi đối thủ rời   ║
 ║  FIX: Cập nhật động khi có người vào/ra phòng xem             ║
 ║  FIX: Chạy bất đồng bộ http_login tránh nghẽn luồng WebSocket    ║
@@ -212,6 +215,128 @@ def detect_embryo_binary() -> Optional[str]:
         except Exception: pass
         return str(f)
     return None
+
+# ======================== ALPHAGOMOKU CONFIG ========================
+ALPHA_VERSION = "5.9.3"
+ALPHA_ENGINE_DIR = _BASE_DIR / "alphagomoku-engine"
+ALPHA_BINARY = "pbrain-AlphaGomoku"
+ALPHA_DOWNLOAD_URL = (
+    "https://github.com/nguyen05566-org/jieqi-core/releases/download/"
+    "alphagomoku-15x15/alphagomoku_caro6_15x15.tar.gz"
+)
+ALPHA_WIN = 15            # bàn vuông của engine
+ALPHA_TIMEOUT = 2000      # 2 giây / nước (như ceiling của Embryo)
+ALPHA_MOVE_TIMEOUT = 20.0 # timeout cứng khâu tính nước (gồm lần đầu khởi tạo engine)
+ALPHA_MATCH_TIMEOUT = 1800000
+ALPHA_RULE = 8            # Gomocup rule 8 = CARO6
+ALPHA_NETWORK = "caro6_conv_8x128.bin"
+
+def _validate_engine_binary(path: Path) -> bool:
+    """Validate binary engine: ELF trên Linux, PE trên Windows (min 1000 bytes).
+
+    (Nhân bản logic của _validate_embryo_binary để hai engine độc lập với nhau.)
+    """
+    if not path.exists() or not path.is_file():
+        return False
+    try:
+        if path.stat().st_size < 1000:
+            return False
+        with open(path, "rb") as f:
+            header = f.read(4)
+        if sys.platform.startswith("win"):
+            return header[:2] == b"MZ"
+        return header == b"\x7fELF"
+    except Exception:
+        return False
+
+def detect_alpha_binary() -> Optional[str]:
+    if not ALPHA_ENGINE_DIR.exists(): return None
+    b = ALPHA_ENGINE_DIR / ALPHA_BINARY
+    if b.exists():
+        if not _validate_engine_binary(b):
+            return None
+        try: b.chmod(0o755)
+        except Exception: pass
+        return str(b)
+    for f in ALPHA_ENGINE_DIR.glob("pbrain-AlphaGomoku*"):
+        if f.suffix in (".tgz", ".gz", ".zip", ".xz", ".bz2"):
+            continue
+        if not _validate_engine_binary(f):
+            continue
+        try: f.chmod(0o755)
+        except Exception: pass
+        return str(f)
+    return None
+
+def alpha_package_valid(binary_path: Path) -> bool:
+    """Kiểm tra cả bộ: binary + config.json + networks/caro6."""
+    if not _validate_engine_binary(binary_path): return False
+    if not (ALPHA_ENGINE_DIR / "config.json").exists(): return False
+    if not (ALPHA_ENGINE_DIR / "networks" / ALPHA_NETWORK).exists(): return False
+    return True
+
+def auto_download_alphagomoku() -> Optional[str]:
+    """Tải tar.gz từ GitHub Release (public repo → không cần token), bung lại bộ package."""
+    binary_path = ALPHA_ENGINE_DIR / ALPHA_BINARY
+    if binary_path.exists() and alpha_package_valid(binary_path):
+        try: binary_path.chmod(0o755)
+        except Exception: pass
+        return str(binary_path)
+    log.info(f"[AG] Downloading AlphaGomoku ({ALPHA_VERSION} CARO6 15x15)...")
+    ALPHA_ENGINE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        req = urllib.request.Request(ALPHA_DOWNLOAD_URL, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+        })
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"HTTP {resp.status} downloading AlphaGomoku tarball")
+            data = resp.read()
+        tgz_path = str(ALPHA_ENGINE_DIR / "alphagomoku_caro6_15x15.tar.gz")
+        with open(tgz_path, "wb") as out:
+            out.write(data)
+        import tarfile
+        with tarfile.open(tgz_path, "r:gz") as tar:
+            tar.extractall(ALPHA_ENGINE_DIR)
+        try: os.remove(tgz_path)
+        except Exception: pass
+        try: binary_path.chmod(0o755)
+        except Exception: pass
+        if not binary_path.exists() or not alpha_package_valid(binary_path):
+            log.error("[AG] Downloaded package failed validation")
+            try: binary_path.unlink()
+            except Exception: pass
+            return None
+        return str(binary_path)
+    except Exception as e:
+        log.error(f"[AG] Download failed: {e}")
+        return None
+
+def compute_window(board_history: list, board_width: int, board_height: int) -> int:
+    """Cửa sổ trượt 15x15 trên bàn 15x19. Trả về offset y (wy) của cửa sổ."""
+    if board_height <= ALPHA_WIN:
+        return 0
+    if board_width > ALPHA_WIN:
+        return max(0, (board_height - ALPHA_WIN) // 2)
+    max_wy = board_height - ALPHA_WIN  # 19-15=4
+    ys = [y for (_, y, _) in board_history]
+    if not ys:
+        return max_wy // 2
+    lo, hi = min(ys), max(ys)
+    if hi - lo + 1 <= ALPHA_WIN:
+        # Phủ toàn bộ đá, ưu tiên canh tâm cụm đá
+        center = (lo + hi) / 2.0
+        wy = int(round(center - (ALPHA_WIN - 1) / 2.0))
+        wy = max(0, min(wy, max_wy))
+        # Đảm bảo vẫn phủ hết span (clamp có thể lệch khi span sát mép)
+        wy = max(wy, min(max_wy, hi - ALPHA_WIN + 1))
+        wy = min(wy, lo)
+        wy = max(0, min(wy, max_wy))
+        return wy
+    # Span quá 15 hàng → canh tâm vào nước cuối (focus động)
+    last_y = ys[-1]
+    wy = last_y - ALPHA_WIN // 2
+    return max(0, min(wy, max_wy))
 
 # ======================== ENGINE WRAPPER ========================
 class EmbryoEngine:
@@ -466,6 +591,266 @@ class EmbryoEngine:
         if self.proc:
             try:
                 self._send("END")
+            except Exception:
+                pass
+            try:
+                self.proc.terminate()
+                self.proc.wait(3)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+            self.proc = None
+            self._initialized = False
+        self._close_selector()
+
+    def stop(self):
+        with self.lock:
+            self._stop_unlocked()
+
+# ======================== ALPHAGOMOKU ENGINE WRAPPER ========================
+class AlphaGomokuEngine:
+    """pbrain-AlphaGomoku (vanilla v5.9.3): bàn vuông 15x15, rule 8 = CARO6.
+
+    Cửa sổ trượt: mỗi lượt gửi BOARD với đá đã map (x, y-wy); wy thay đổi
+    theo vị trí đá nên luôn sync full board (không dùng TURN tăng dần).
+    Engine trả về (mx, my_engine) → nước game = (mx, my_engine + wy).
+    """
+
+    def __init__(self, timeout_turn=ALPHA_TIMEOUT, board_width=ALPHA_WIN,
+                 board_height=ALPHA_WIN, match_timeout_ms=ALPHA_MATCH_TIMEOUT,
+                 rules=ALPHA_RULE):
+        self.binary = detect_alpha_binary()
+        self.timeout_turn = timeout_turn
+        self.match_timeout_ms = match_timeout_ms
+        self.time_left_ms = self.match_timeout_ms
+        self._match_start_mono = None
+        self.board_width = board_width
+        self.board_height = board_height
+        self.rules = rules
+        self.proc = None
+        self.lock = threading.Lock()
+        self._buffer = bytearray()
+        self.my_side = 1
+        self._initialized = False
+        self._selector = None
+        self._first_move_done = False
+
+    def _init_selector(self):
+        self._close_selector()
+        if self.proc and self.proc.stdout:
+            try:
+                self._selector = selectors.DefaultSelector()
+                self._selector.register(self.proc.stdout, selectors.EVENT_READ)
+            except Exception as e:
+                log.warning(f"[AG] Selector register error: {e}")
+                self._selector = None
+
+    def _close_selector(self):
+        if self._selector:
+            try:
+                self._selector.close()
+            except Exception:
+                pass
+            self._selector = None
+
+    def _send_time_infos(self):
+        left = self.time_left_ms
+        # LƯU Ý: pbrain-AlphaGomoku match lệnh case-sensitive → mọi lệnh phải lowercase
+        self._send(f"info timeout_turn {self.timeout_turn}")
+        self._send(f"info timeout_match {self.match_timeout_ms}")
+        self._send(f"info time_left {left}")
+
+    def _send(self, cmd: str):
+        if self.proc and self.proc.poll() is None:
+            try:
+                self.proc.stdin.write((cmd + "\n").encode("utf-8"))
+                self.proc.stdin.flush()
+            except Exception:
+                pass
+
+    def _read_line(self, timeout=10.0) -> str:
+        if not self.proc or self.proc.poll() is not None:
+            return ""
+        deadline = time.monotonic() + timeout
+        while True:
+            idx = self._buffer.find(b"\n")
+            if idx >= 0:
+                line_bytes = bytes(self._buffer[:idx]).strip()
+                del self._buffer[:idx + 1]
+                return line_bytes.decode("utf-8", errors="replace")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return ""
+            try:
+                if self._selector:
+                    ready = self._selector.select(timeout=min(remaining, 0.1))
+                else:
+                    sel = selectors.DefaultSelector()
+                    sel.register(self.proc.stdout, selectors.EVENT_READ)
+                    ready = sel.select(timeout=min(remaining, 0.1))
+                    sel.close()
+                if ready:
+                    chunk = os.read(self.proc.stdout.fileno(), 4096)
+                    if not chunk:
+                        return ""
+                    self._buffer.extend(chunk)
+            except Exception:
+                return ""
+
+    def _drain_output(self):
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline:
+            line = self._read_line(timeout=0.05)
+            if not line:
+                break
+            if line.startswith(('MESSAGE', 'DEBUG', 'ERROR')):
+                log.debug(f'[AG] drain: {line}')
+            else:
+                log.warning(f'[AG] drain unexpected: {line}')
+
+    def start_game(self, my_symbol=1) -> bool:
+        with self.lock:
+            self._match_start_mono = time.monotonic()
+            self.time_left_ms = self.match_timeout_ms
+            if self.proc and self.proc.poll() is None:
+                self._send("restart")
+                for _ in range(5):
+                    line = self._read_line(timeout=0.5)
+                    log.info(f"[AG] RESTART response: '{line}'")
+                    if line.upper() == "OK":
+                        break
+                self._send_time_infos()
+                self.my_side = my_symbol
+                self._initialized = True
+                self._first_move_done = False
+                log.info("[AG] RESTART OK (bàn giữ nguyên 15x15, rule 8 CARO6)")
+                return True
+
+            self._stop_unlocked()
+            if not self.binary:
+                return False
+            try:
+                cmd = [self.binary]
+                self.proc = subprocess.Popen(
+                    cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, cwd=str(ALPHA_ENGINE_DIR)
+                )
+                self._buffer = bytearray()
+                self._init_selector()
+                self.my_side = my_symbol
+                # Bàn vuông 15x15 + luật CARO6 (rule 8)
+                self._send("start 15")
+                for _ in range(10):
+                    line = self._read_line(timeout=1.0)
+                    if line.upper() == "OK":
+                        break
+                    log.info(f"[AG] START response: '{line}'")
+                self._send(f"info rule {self.rules}")
+                self._send_time_infos()
+                time.sleep(0.2)
+                self._drain_output()
+                self._initialized = True
+                self._first_move_done = False
+                return True
+            except Exception as e:
+                log.error(f"[AG] Start error: {e}")
+                self._initialized = False
+                return False
+
+    def restart_game(self) -> bool:
+        with self.lock:
+            if not self._initialized or not self.proc or self.proc.poll() is not None:
+                log.warning("[AG] restart_game: process not initialized or dead")
+                return False
+            try:
+                self._match_start_mono = time.monotonic()
+                self.time_left_ms = self.match_timeout_ms
+                self._send("restart")
+                got_ok = False
+                for _ in range(5):
+                    line = self._read_line(timeout=2.0)
+                    if line.upper() == "OK":
+                        got_ok = True
+                        break
+                if not got_ok:
+                    log.warning("[AG] RESTART did not receive OK")
+                    return False
+                self._send_time_infos()
+                self._first_move_done = False
+                log.info("[AG] RESTART OK (rule 8 CARO6 giữ nguyên)")
+                return True
+            except Exception as e:
+                log.error(f"[AG] restart_game error: {e}")
+                return False
+
+    def _run_search(self, board_history: list, window_y: int, my_side: int):
+        if not self._initialized or not self.proc or self.proc.poll() is not None:
+            return None
+
+        if self._match_start_mono is not None:
+            elapsed_ms = int((time.monotonic() - self._match_start_mono) * 1000)
+            self.time_left_ms = max(self.match_timeout_ms - elapsed_ms, self.timeout_turn)
+        else:
+            self._match_start_mono = time.monotonic()
+
+        self._send_time_infos()
+        t0 = time.monotonic()
+
+        # Luôn sync full board trong cửa sổ (wy có thể đổi mỗi lượt)
+        self._send("board")
+        for (x, y, sym) in board_history:
+            xe = x
+            ye = y - window_y
+            if 0 <= xe < self.board_width and 0 <= ye < self.board_height:
+                c = 1 if sym == my_side else 2
+                self._send(f"{xe},{ye},{c}")
+        self._send("done")
+
+        # Lượt đầu của process chậm hơn (engine load network ngay board đầu)
+        slack = 8.0 if not self._first_move_done else 3.0
+        deadline = time.monotonic() + (self.timeout_turn / 1000.0) + slack
+        move_count = 0
+        while time.monotonic() < deadline:
+            rem_time = deadline - time.monotonic()
+            line = self._read_line(timeout=min(0.1, rem_time))
+            if not line:
+                continue
+            if line.startswith(("MESSAGE", "ERROR", "DEBUG")):
+                log.info(f"[AG] engine msg: {line}")
+                continue
+            match = re.match(r"^\s*(\d+)\s*,\s*(\d+)\s*$", line)
+            if match:
+                mx, mye = int(match.group(1)), int(match.group(2))
+                gy = mye + window_y
+                if not (0 <= mx < self.board_width and 0 <= mye < self.board_height):
+                    log.warning(f"[AG] Bỏ qua nước ngoài cửa sổ: {mx},{mye}")
+                    continue
+                think_ms = int((time.monotonic() - t0) * 1000)
+                move_count += 1
+                if move_count > 1:
+                    log.warning(f"[AG] Nhận {move_count} nước, dùng nước cuối: {mx},{gy}")
+                self._first_move_done = True
+                self.time_left_ms = max(self.time_left_ms - think_ms, self.timeout_turn)
+                log.info(f"[AG] Move=({mx},{gy}) engine=({mx},{mye}) wy={window_y} "
+                         f"think={think_ms}ms")
+                return mx, gy
+        log.warning("[AG] Timeout — engine không trả kết quả")
+        return None
+
+    def get_move(self, board_history: list, window_y: int, my_side: int) -> Optional[Tuple[int, int]]:
+        with self.lock:
+            try:
+                return self._run_search(board_history, window_y, my_side)
+            except Exception as e:
+                log.warning(f"[AG] get_move error: {e}")
+                return None
+
+    def _stop_unlocked(self):
+        if self.proc:
+            try:
+                self._send("end")
             except Exception:
                 pass
             try:
@@ -745,8 +1130,13 @@ class CaroBot:
         self.bet_amts = []; self._resolved_bet_id = None
         self._bet_amts_loaded = False; self._joining_table = False
 
-        self.engine = None; self.embryo_available = False
+        self.engine = None; self.engine_kind = None  # 'ag' | 'embryo'
+        self.embryo_available = False
         self.embryo_moves = 0; self.embryo_errors = 0; self.embryo_fallback_count = 0
+        self.ag_available = False
+        self.ag_moves = 0; self.ag_errors = 0; self.ag_fallback_count = 0
+        self._ag_skip_until = 0.0        # tạm ngưng thử AG sau lỗi (không tải lại)
+        self._ag_dl_skip_until = 0.0     # tạm ngưng tải lại package AG
         self._moving = False; self._last_move_xy = None
         self._embryo_reinit_attempts = 0
         self._embryo_reinit_cooldown_until = 0.0
@@ -762,8 +1152,51 @@ class CaroBot:
         self._identity_attempted = False
         self.identity_result = {}
 
+    def _engine_alive(self) -> bool:
+        return (self.engine is not None and getattr(self.engine, "proc", None) is not None
+                and self.engine.proc.poll() is None and self.engine._initialized)
+
     def init_engine(self):
-        if self.engine is not None: return self.embryo_available
+        """Khởi tạo engine: ưu tiên AlphaGomoku (15x15 + rule 8), dự phòng Embryo."""
+        if self.engine is not None: return True
+
+        # ---- 1) AlphaGomoku (chính) ----
+        now = time.time()
+        if now >= self._ag_skip_until:
+            binary = detect_alpha_binary()
+            if not binary and now >= self._ag_dl_skip_until:
+                binary = auto_download_alphagomoku()
+                if not binary:
+                    self._ag_dl_skip_until = now + 600.0
+            if binary:
+                if self.board.width > ALPHA_WIN:
+                    log.warning(f"[AG] Bàn rộng {self.board.width}x{self.board.height} > cửa sổ "
+                                f"{ALPHA_WIN}x{ALPHA_WIN} → bỏ qua AG cho trận này")
+                    self._ag_skip_until = now + 600.0
+                    binary = None
+            if binary:
+                try:
+                    eng = AlphaGomokuEngine(timeout_turn=ALPHA_TIMEOUT,
+                                            board_width=ALPHA_WIN, board_height=ALPHA_WIN,
+                                            match_timeout_ms=ALPHA_MATCH_TIMEOUT,
+                                            rules=ALPHA_RULE)
+                    eng.binary = binary
+                    if eng.start_game(my_symbol=self.my_symbol):
+                        self.engine = eng; self.engine_kind = "ag"
+                        self.ag_available = True
+                        log.info(f"[AG] AlphaGomoku v{ALPHA_VERSION} OK! (rule {ALPHA_RULE}=CARO6, "
+                                 f"cửa sổ {ALPHA_WIN}x{ALPHA_WIN} trượt trên "
+                                 f"{self.board.width}x{self.board.height})")
+                        return True
+                    eng.stop()
+                    log.warning("[AG] Start failed!")
+                except Exception as e:
+                    log.error(f"[AG] Init error: {e}")
+                self.ag_available = False
+                self._ag_skip_until = now + 60.0
+                self._ag_dl_skip_until = max(self._ag_dl_skip_until, now + 600.0)
+
+        # ---- 2) Embryo (dự phòng) ----
         binary = detect_embryo_binary()
         if not binary:
             binary = auto_download_embryo()
@@ -776,15 +1209,41 @@ class CaroBot:
             self.engine.binary = binary
             ok = self.engine.start_game(my_symbol=self.my_symbol)
             if ok:
+                self.engine_kind = "embryo"
                 self.embryo_available = True
-                log.info(f"[Embryo] Embryo v{EMBRYO_VERSION} OK! (pbrain-embryo Linux - caro6)")
-            else:
-                self.embryo_available = False
-                log.warning("[Embryo] Start failed!")
-            return self.embryo_available
+                log.info(f"[Embryo] Embryo v{EMBRYO_VERSION} OK! (pbrain-embryo Linux - caro6) [dự phòng]")
+                return True
+            self.embryo_available = False
+            log.warning("[Embryo] Start failed!")
+            return False
         except Exception as e:
             log.error(f"[Embryo] Init error: {e}")
             self.embryo_available = False
+            return False
+
+    def _init_embryo_now(self) -> bool:
+        """Khởi tạo Embryo ngay giữa lượt (không thử lại AG) — dùng khi AG lỗi tại chỗ."""
+        if self.engine is not None:
+            self.engine.stop(); self.engine = None
+        self.engine_kind = None
+        self.embryo_available = False
+        binary = detect_embryo_binary()
+        if not binary:
+            binary = auto_download_embryo()
+        if not binary:
+            return False
+        try:
+            eng = EmbryoEngine(timeout_turn=EMBRYO_TIMEOUT, board_width=15, board_height=19)
+            eng.binary = binary
+            if eng.start_game(my_symbol=self.my_symbol):
+                self.engine = eng; self.engine_kind = "embryo"
+                self.embryo_available = True
+                log.info("[Embryo] Đã bật Embryo dự phòng ngay trong lượt")
+                return True
+            eng.stop()
+            return False
+        except Exception as e:
+            log.warning(f"[Embryo] Init ngay thất bại: {e}")
             return False
 
     @property
@@ -792,18 +1251,22 @@ class CaroBot:
 
     def stop(self):
         self._running = False
-        if self.engine: self.engine.stop(); self.engine = None; self.embryo_available = False
+        if self.engine: self.engine.stop(); self.engine = None
+        self.engine_kind = None
+        self.embryo_available = False; self.ag_available = False
 
     def _hard_reset_engine(self, reason: str = ""):
         try:
             if self.engine is not None:
                 self.engine.stop()
         except Exception as e:
-            log.warning(f"[Embryo] _hard_reset_engine stop error: {e}")
+            log.warning(f"[Engine] _hard_reset_engine stop error: {e}")
         finally:
             self.engine = None
+            self.engine_kind = None
             self.embryo_available = False
-        log.warning(f"[Embryo] HARD-RESET engine (reason={reason}) → lượt sau sẽ init_engine() lại")
+            self.ag_available = False
+        log.warning(f"[Engine] HARD-RESET engine (reason={reason}) → lượt sau sẽ init_engine() lại")
 
     def _try_reinit_engine(self) -> bool:
         MAX_REINIT = 3
@@ -812,15 +1275,15 @@ class CaroBot:
         if now < self._embryo_reinit_cooldown_until:
             return False
         if self._embryo_reinit_attempts >= MAX_REINIT:
-            log.warning(f"[Embryo] Đã thử reinit {self._embryo_reinit_attempts}x, tạm ngưng. Sẽ thử lại trận sau.")
+            log.warning(f"[Engine] Đã thử reinit {self._embryo_reinit_attempts}x, tạm ngưng. Sẽ thử lại trận sau.")
             return False
         self._embryo_reinit_attempts += 1
         self._embryo_reinit_cooldown_until = now + COOLDOWN
-        log.warning(f"[Embryo] Thử tái khởi tạo engine ngay trong ván (lần {self._embryo_reinit_attempts}/{MAX_REINIT})...")
+        log.warning(f"[Engine] Thử tái khởi tạo engine ngay trong ván (lần {self._embryo_reinit_attempts}/{MAX_REINIT})...")
         self._hard_reset_engine("reinit-mid-match")
         ok = self.init_engine()
         if ok:
-            log.info("[Embryo] Engine đã phục hồi ngay trong ván")
+            log.info(f"[Engine] Engine ({self.engine_kind}) đã phục hồi ngay trong ván")
             self._embryo_reinit_attempts = 0
         return ok
 
@@ -893,6 +1356,32 @@ class CaroBot:
         else:
             await self.send(self.make_create_rule())
 
+    async def _turn_fallback_embryo_move(self, history: list) -> Optional[Tuple[int, int]]:
+        """AG lỗi ngay trong lượt → bật Embryo dự phòng, tính 1 nước thay thế."""
+        try:
+            if not self._init_embryo_now():
+                return None
+            move = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self.engine.get_move(history, self.my_symbol)
+                ),
+                timeout=EMBRYO_MOVE_TIMEOUT
+            )
+            if (move and 0 <= move[0] < self.board.width and 0 <= move[1] < self.board.height
+                    and self.board.get(*move) == EMPTY):
+                return move
+            return None
+        except Exception as e:
+            log.warning(f"[Embryo] Fallback turn error: {e}")
+            if self.engine is not None:
+                try:
+                    self.engine.stop()
+                except Exception:
+                    pass
+                self.engine = None; self.engine_kind = None; self.embryo_available = False
+            return None
+
     async def do_move(self):
         if not self.is_playing or not self.running or self.slot < 0: return
         if self._moving:
@@ -911,10 +1400,65 @@ class CaroBot:
 
             history = list(self.board.history)
 
-            if not self.embryo_available:
+            def near_last() -> Tuple[int, int]:
+                if history:
+                    lx, ly = history[-1][0], history[-1][1]
+                else:
+                    lx, ly = 7, 9
+                return self.board.get_empty_near(lx, ly)
+
+            # Tái khởi tạo trước nếu engine chưa có/đã chết
+            if self.engine is None or not self._engine_alive():
                 self._try_reinit_engine()
 
-            if self.embryo_available:
+            engine_tag = "Embryo"
+            if self.engine is not None and self.engine_kind == "ag":
+                engine_tag = "AG"
+                window_y = compute_window(history, self.board.width, self.board.height)
+                try:
+                    move = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: self.engine.get_move(history, window_y, self.my_symbol)
+                        ),
+                        timeout=ALPHA_MOVE_TIMEOUT
+                    )
+
+                    if not self.is_playing or not self.running:
+                        log.info("[BOT] Ván đã kết thúc trong lúc engine tính, bỏ qua nước đi")
+                        return
+
+                    if (move and 0 <= move[0] < self.board.width and 0 <= move[1] < self.board.height
+                        and self.board.get(*move) == EMPTY):
+                        x, y = move; self.ag_moves += 1
+                    else:
+                        self.ag_errors += 1
+                        log.warning(f"[AG] Nước không hợp lệ: {move}, reset AG, thử Embryo dự phòng")
+                        self._hard_reset_engine("invalid-move")
+                        self.ag_fallback_count += 1
+                        x, y = near_last()
+                        emb_move = await self._turn_fallback_embryo_move(history)
+                        if emb_move:
+                            x, y = emb_move; self.embryo_moves += 1
+                except asyncio.TimeoutError:
+                    self.ag_errors += 1
+                    log.warning(f"[AG] TIMEOUT nước >{ALPHA_MOVE_TIMEOUT}s → engine treo, reset AG, thử Embryo dự phòng")
+                    self._hard_reset_engine("timeout")
+                    self.ag_fallback_count += 1
+                    x, y = near_last()
+                    emb_move = await self._turn_fallback_embryo_move(history)
+                    if emb_move:
+                        x, y = emb_move; self.embryo_moves += 1
+                except Exception as e:
+                    self.ag_errors += 1
+                    log.warning(f"[AG] Error: {e}")
+                    self._hard_reset_engine("exception")
+                    self.ag_fallback_count += 1
+                    x, y = near_last()
+                    emb_move = await self._turn_fallback_embryo_move(history)
+                    if emb_move:
+                        x, y = emb_move; self.embryo_moves += 1
+            elif self.engine is not None and self.engine_kind == "embryo":
                 try:
                     move = await asyncio.wait_for(
                         asyncio.get_event_loop().run_in_executor(
@@ -972,7 +1516,7 @@ class CaroBot:
 
             elapsed = time.time() - start
             pos = self.board.xy_to_pos(x, y)
-            log.info(f"MOVE ({x},{y}) took {elapsed:.2f}s [Embryo]")
+            log.info(f"MOVE ({x},{y}) took {elapsed:.2f}s [{engine_tag}]")
             await self.send(self.make_play(pos))
             self._last_move_xy = (x, y)
             self.board.put(x, y, self.my_symbol)
@@ -1137,7 +1681,8 @@ class CaroBot:
         width = r.u8(); height = r.u8(); self.board.resize(width, height)
         r.i16(); self.board.load_rle(r.read_bytes()); self.update_symbols()
 
-        log.info(f"=== GAME {self.total_games} === Me={'X' if self.my_symbol == CROSS else 'O'}")
+        log.info(f"=== GAME {self.total_games} === Me={'X' if self.my_symbol == CROSS else 'O'} "
+                 f"engine={self.engine_kind or '?'} board={width}x{height}")
 
         if self.engine is None:
             self.init_engine()
@@ -1607,7 +2152,10 @@ class CaroBot:
             self._bet_amts_loaded = False; self._joining_table = False
             self.opponent_gone_at = None; self._table_lost_at = None
 
-            if self.engine: self.engine.stop(); self.engine = None; self.embryo_available = False
+            if self.engine:
+                self.engine.stop(); self.engine = None
+                self.engine_kind = None
+                self.embryo_available = False; self.ag_available = False
 
             # Thử load session đã lưu trước khi login lại
             session_loaded = load_bot_session(self)
@@ -1648,9 +2196,14 @@ class CaroBot:
             # Lưu session sau khi kết thúc vòng chạy để lần sau có thể tái sử dụng
             save_bot_session(self)
             self.save_stats()
-            if self.engine: self.engine.stop(); self.engine = None
+            if self.engine:
+                self.engine.stop(); self.engine = None
+                self.engine_kind = None
 
 def main():
+    ag_path = auto_download_alphagomoku()
+    if ag_path: print(f"[SETUP] AlphaGomoku ready: {os.path.basename(ag_path)} (rule 8 CARO6, cửa sổ 15x15)")
+    else: print("[SETUP] AlphaGomoku chưa tải được — bot dùng Embryo dự phòng")
     bin_path = auto_download_embryo()
     if bin_path: print(f"[SETUP] Embryo ready: {os.path.basename(bin_path)}")
     else: print("[SETUP] No Embryo - bot plays center only")
