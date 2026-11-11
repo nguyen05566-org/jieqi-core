@@ -76,7 +76,7 @@ VN_TEN_KHONG_DAU = [
 
 def generate_random_full_name() -> str:
     """Tên cố định theo yêu cầu."""
-    return "2"
+    return "222"
 
 
 # ======================== EMBRYO CONFIG ========================
@@ -925,7 +925,7 @@ else:
     try:
         BOT_BET_XU = int((input("Nhap muc cuoc (xu) [40000]: ").strip() or "40000"))
     except Exception:
-        BOT_BET_XU = 1000
+        BOT_BET_XU = 40000
 BOT_MATCH_DURATION = '1800'
 BOT_TURN_DURATION = '60'
 # accDuration: countdown (giây) khi đối thủ vào bàn. Server mặc định 10s;
