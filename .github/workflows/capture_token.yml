@@ -20,7 +20,7 @@ concurrency:
 jobs:
   capture:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -36,7 +36,20 @@ jobs:
       - name: Install dependencies
         run: |
           pip install playwright requests
-          playwright install chromium --with-deps
+          # Retry: GH runner đôi khi lỗi DNS tạm thời
+          # ("Temporary failure resolving 'azure.archive.ubuntu.com'")
+          # khiến apt trong --with-deps fail (exit 100).
+          for i in 1 2 3; do
+            sudo apt-get update -qq || true
+            if playwright install chromium --with-deps; then
+              echo "Install OK (attempt $i)"
+              exit 0
+            fi
+            echo "Install failed (attempt $i) — retrying in 20s..."
+            sleep 20
+          done
+          echo "::error::playwright install failed after 3 attempts (runner network issue?)"
+          exit 1
 
       - name: Check cookie file exists
         id: check
