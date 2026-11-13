@@ -28,18 +28,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install websockets
-      - name: Check token
-        id: check
+      - run: pip install websockets playwright
+      - run: playwright install chromium --with-deps
+      - name: Capture token from cookie (ck2.txt)
         run: |
-          if [ -f state/tokens/ck2_token.json ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "No token for ck2"
-          fi
-      - name: Run bot
-        if: steps.check.outputs.exists == 'true'
+          python3 capture_token.py --cookie ck2.txt --output state/tokens/ck2_token.json
+      - name: Run bot (websocket + token)
         env:
           CLAIM_MIN: ${{ inputs.claim_min || '40000' }}
           CLAIM_MAX: '50000'
@@ -47,5 +41,5 @@ jobs:
           MAX_CLAIMS: '100'
           RUNTIME_SECONDS: ${{ inputs.bot_runtime || '21600' }}
         run: |
-          echo "=== ws_bot ck2 (token, no target search) ==="
+          echo "=== ws_bot ck2 (cookie -> token -> websocket) ==="
           python3 ws_bot_ck2.py --token-file state/tokens/ck2_token.json
