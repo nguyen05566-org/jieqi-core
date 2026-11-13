@@ -5,30 +5,32 @@ Cờ Caro — tạo bàn tự chơi + surrender (không cần tìm target).
 
 Flow:
   1. Load token từ state/tokens/ck2_token.json (ws_url + frames).
+     Nếu chưa có token, tự động chạy capture_token.py từ ck2.txt (cookie)
+     để sinh token trước khi chạy bot.
   2. WS connect → LOGIN (replay frames) → ENTER_PLACE Lobby.caro.0.
   3. CLAIM VIDEO_REWARD cho đủ balance (tùy chọn).
   4. TẠO BÀN (CREATE_RULE) → SET_READY → chờ START_MATCH → SURRENDER.
   5. Lặp lại cho đến khi hết runtime.
 
 NO browser, NO Facebook ad, NO Playwright — pure WebSocket!
-Dùng token thay cho cookies. Không cần tìm target (tự tạo bàn).
+Dùng cookie ck2.txt → capture token → websocket. Không cần tìm target.
 
 Usage:
-  python3 ws_bot_ck2.py
+  python3 ws_bot_ck2.py --cookie-file ck2.txt --token-file state/tokens/ck2_token.json
+  (nếu token chưa có, bot sẽ tự chạy capture_token.py để sinh từ cookie)
 """
 import argparse
 import asyncio
 import json
 import os
 import struct
+import subprocess
 import sys
 import time
 import random
 from pathlib import Path
 
 import websockets
-
-DEFAULT_TOKEN_FILE = "state/tokens/ck2_token.json"
 
 # ======================== BINARY PROTOCOL ========================
 CMD_MAP = {
@@ -378,11 +380,41 @@ class WSBot:
                         last_bal = self.balance
         log(f"  [stay] done — balance: {self.balance:,} (was {bal_after_surrender:,})")
 
+DEFAULT_TOKEN_FILE = "state/tokens/ck2_token.json"
+DEFAULT_COOKIE_FILE = "ck2.txt"
+
+
+def ensure_token_from_cookie(cookie_file, token_file):
+    """Nếu token chưa có, tự động chạy capture_token.py từ cookie để sinh token.
+    Trả về đường dẫn token file nếu thành công, ngược lại None."""
+    if os.path.exists(token_file):
+        return token_file
+    if not os.path.exists(cookie_file):
+        log(f"[TOKEN] Chưa có {token_file} và cũng không có {cookie_file}")
+        return None
+    log(f"[TOKEN] Chưa có {token_file} — đang tự động capture từ {cookie_file} ...")
+    try:
+        subprocess.run(
+            [sys.executable, "capture_token.py", "--cookie", cookie_file,
+             "--output", token_file],
+            check=True, timeout=120)
+    except Exception as e:
+        log(f"[TOKEN] Auto-capture thất bại: {e}")
+        return None
+    if os.path.exists(token_file):
+        log(f"[TOKEN] ✓ Đã sinh token: {token_file}")
+        return token_file
+    log(f"[TOKEN] Không sinh được token từ {cookie_file}")
+    return None
+
+
 # ======================== MAIN ========================
 async def main():
-    parser = argparse.ArgumentParser(description="Pure WS bot — create table + surrender (token, no target search)")
+    parser = argparse.ArgumentParser(description="Pure WS bot — create table + surrender (cookie→token→websocket, no target search)")
     parser.add_argument("--token-file", default=DEFAULT_TOKEN_FILE,
                         help=f"Path to token JSON file (default: {DEFAULT_TOKEN_FILE})")
+    parser.add_argument("--cookie-file", default=DEFAULT_COOKIE_FILE,
+                        help=f"Path to cookie file used to auto-capture token if missing (default: {DEFAULT_COOKIE_FILE})")
     parser.add_argument("--claim-min", type=int, default=int(os.environ.get("CLAIM_MIN", "40000")))
     parser.add_argument("--claim-max", type=int, default=int(os.environ.get("CLAIM_MAX", "50000")))
     parser.add_argument("--bet-id", type=int, default=int(os.environ.get("BET_ID", "10")))
@@ -392,15 +424,18 @@ async def main():
     args = parser.parse_args()
 
     token_path = Path(args.token_file)
-    if not token_path.exists():
-        log(f"[FATAL] Token file không tồn tại: {token_path}")
+    resolved = ensure_token_from_cookie(args.cookie_file, args.token_file)
+    if not resolved:
+        log(f"[FATAL] Không có token ({args.token_file}) và không thể sinh từ cookie ({args.cookie_file})")
+        log(f"        Chạy trước: python3 capture_token.py --cookie {args.cookie_file} --output {args.token_file}")
         sys.exit(1)
     data = json.loads(token_path.read_text())
     ws_url = data["ws_url"]
     login_frames = [bytes.fromhex(h) for h in data["frames"]]
 
     log(f"{'='*60}")
-    log(f"PURE WS BOT — create table + surrender (token, no target search)")
+    log(f"PURE WS BOT — create table + surrender (cookie→token→websocket, no target search)")
+    log(f"  Cookie: {args.cookie_file}")
     log(f"  Token: {args.token_file}")
     log(f"  WS: {ws_url}")
     log(f"  Claim range: [{args.claim_min:,}, {args.claim_max:,}]")
