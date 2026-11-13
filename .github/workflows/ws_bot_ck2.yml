@@ -3,10 +3,6 @@ name: ws_bot_ck2
 on:
   workflow_dispatch:
     inputs:
-      target_name:
-        description: 'Target name'
-        required: false
-        default: 'nguyen123456'
       claim_min:
         description: 'Claim min (xu)'
         required: false
@@ -45,13 +41,11 @@ jobs:
       - name: Run bot
         if: steps.check.outputs.exists == 'true'
         env:
-          TARGET_NAME: ${{ inputs.target_name || 'nguyen123456' }}
-          TARGET_ID: '68982512'
           CLAIM_MIN: ${{ inputs.claim_min || '40000' }}
           CLAIM_MAX: '50000'
           BET_ID: '10'
           MAX_CLAIMS: '100'
           RUNTIME_SECONDS: ${{ inputs.bot_runtime || '21600' }}
         run: |
-          echo "=== ws_bot ck2 ==="
+          echo "=== ws_bot ck2 (token, no target search) ==="
           python3 ws_bot_ck2.py --token-file state/tokens/ck2_token.json
