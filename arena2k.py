@@ -76,7 +76,7 @@ VN_TEN_KHONG_DAU = [
 
 def generate_random_full_name() -> str:
     """Tên cố định theo yêu cầu."""
-    return "222"
+    return "làm lại từ đầu"
 
 
 # ======================== EMBRYO CONFIG ========================
