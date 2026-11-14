@@ -76,7 +76,7 @@ VN_TEN_KHONG_DAU = [
 
 def generate_random_full_name() -> str:
     """Tên cố định theo yêu cầu."""
-    return "sợ chưa"
+    return "xinloiem"
 
 
 # ======================== EMBRYO CONFIG ========================
@@ -909,7 +909,7 @@ class AlphaGomokuEngine:
 WS_URL = "wss://gamevh.net/ws/gameServer"
 GAME_URL = "https://gamevh.net/play/caro/0"
 # === CẤU HÌNH TRỰC TIẾP - KHÔNG CẦN SECRETS ===
-CARO_USER_DIRECT = "arena5"
+CARO_USER_DIRECT = "yyyyyyyyyy"
 CARO_PASSWD_DIRECT = "nhat123456"
 def _clean_env(val: Optional[str], default: str) -> str:
     if val and str(val).strip(): return str(val).strip()
