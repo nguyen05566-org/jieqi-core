@@ -12,7 +12,7 @@
 ║  FIX: Sửa lỗi xung đột bộ đệm tiến trình con của AI            ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
-import subprocess, sys, os, importlib, urllib.request, json, time, struct
+import subprocess, sys, os, platform, importlib, urllib.request, json, time, struct
 import re, logging, asyncio, random, threading, selectors, html as html_lib
 from typing import List, Tuple, Dict, Optional
 from pathlib import Path
@@ -914,6 +914,8 @@ if not PASSWD:
 
 VERSION = "5.0.2"
 GAME_ID = "caro"
+PROXY = os.environ.get("CARO_PROXY", "").strip()  # vd: socks5://ip:port
+HTTP_TIMEOUT = float(os.environ.get("CARO_HTTP_TIMEOUT", "30"))
 RUNTIME = int(os.environ.get("CARO_RUNTIME_SECONDS") or
               float(os.environ.get("CARO_RUNTIME_HOURS", "5.9")) * 3600)
 AUTO_IDENTITY = os.environ.get("CARO_AUTO_IDENTITY", "1") == "1"
@@ -940,6 +942,7 @@ SESSION_FILE = SESSION_DIR / "arena5k_session.json"
 
 def save_bot_session(bot) -> bool:
     """Lưu session gamevh (cookie, token, nickname, place_path) ra JSON để đăng nhập lại nhanh."""
+    return False
     try:
         SESSION_DIR.mkdir(parents=True, exist_ok=True)
         data = {
@@ -959,6 +962,7 @@ def save_bot_session(bot) -> bool:
 
 def load_bot_session(bot) -> bool:
     """Load session gamevh từ JSON. Trả về True nếu có session hợp lệ."""
+    return False
     try:
         if not SESSION_FILE.exists():
             return False
@@ -1145,6 +1149,7 @@ class CaroBot:
         self.players = {}; self.nickname = ""; self.token = 0; self.cookie = ""
         self.place_path = "Lobby.caro.0"; self.lock_key = ""
         self.start_time = None; self.last_activity = time.time(); self._running = True
+        self.ping_count = 0; self.last_ping = 0.0
         self.wins = 0; self.losses = 0; self.draws = 0; self.total_games = 0
         self.pending_move = False
         self.bet_amts = []; self._resolved_bet_id = None
@@ -1550,6 +1555,9 @@ class CaroBot:
         cmd = r.read_command()
         if cmd != "PING": log.info(f"RECV {cmd}")
         self.last_activity = time.time()
+        if cmd == "PING":
+            self.ping_count += 1; self.last_ping = time.time()
+            log.info(f"[KEEPALIVE] server PING #{self.ping_count} -> PONG")
         try:
             if cmd == "PING": await self.send(self.make_pong())
             elif cmd == "LOGIN": await self.handle_login(r)
@@ -1894,6 +1902,12 @@ class CaroBot:
 
             if not self.ws or self.ws.close_code is not None: continue
 
+            if time.time() - self.last_activity > 90:
+                log.warning("[KEEPALIVE] 90s không có dữ liệu — đóng WS để reconnect")
+                try: await self.ws.close()
+                except Exception: pass
+                continue
+
             try:
                 if (self.opponent_gone_at is not None and self.is_playing
                     and time.time() - self.opponent_gone_at > 15):
@@ -2081,9 +2095,11 @@ class CaroBot:
                 'User-Agent': ua,
                 'Accept-Language': 'vi-VN,vi;q=0.9,en;q=0.7'
             })
-            session.get('https://gamevh.net/login.jsp', timeout=10)
+            if PROXY:
+                session.proxies = {"http": PROXY, "https": PROXY}
+            session.get('https://gamevh.net/login.jsp', timeout=HTTP_TIMEOUT)
             resp = session.post(
-                'https://gamevh.net/login.jsp', timeout=10,
+                'https://gamevh.net/login.jsp', timeout=HTTP_TIMEOUT,
                 data={'redirect': '/', 'USER_NAME': USER, 'PASSWORD': PASSWD,
                       'AUTO_LOGIN': 'true', 'LOGIN': 'Đăng nhập'},
                 headers={'Origin': 'https://gamevh.net',
@@ -2098,7 +2114,7 @@ class CaroBot:
                 self._identity_attempted = True
                 self.update_profile_identity(session)
 
-            game_resp = session.get(GAME_URL, timeout=10)
+            game_resp = session.get(GAME_URL, timeout=HTTP_TIMEOUT)
             self.cookie = '; '.join(f'{k}={v}' for k, v in session.cookies.items())
             page_html = game_resp.text
 
@@ -2131,17 +2147,35 @@ class CaroBot:
 
     async def connect_ws(self) -> bool:
         try:
+            _kw = {}
+            if PROXY:
+                _kw["proxy"] = PROXY
             self.ws = await websockets.connect(WS_URL,
                 additional_headers={"Cookie": self.cookie, "Origin": "https://gamevh.net",
                                     "User-Agent": "Mozilla/5.0"},
-                max_size=2**20, ping_interval=None)
+                max_size=2**20, ping_interval=None, **_kw)
             return True
         except Exception as e: log.error(f"[BOT] WS connect error: {e}"); return False
+
+    async def keepalive_loop(self):
+        try:
+            while self.running and self.ws and self.ws.close_code is None:
+                await asyncio.sleep(20)
+                if not self.running or not self.ws or self.ws.close_code is not None:
+                    break
+                try:
+                    await self.send(self.make_pong())
+                    log.info("[KEEPALIVE] client PONG -> server")
+                except Exception:
+                    break
+        except asyncio.CancelledError:
+            pass
 
     async def run_ws(self):
         if not await self.connect_ws(): return
         await self.send(self.make_login())
         wd_task = asyncio.create_task(self.watchdog())
+        ka_task = asyncio.create_task(self.keepalive_loop())
         try:
             async for raw in self.ws:
                 if not self.running: break
@@ -2150,8 +2184,10 @@ class CaroBot:
             log.warning(f"[BOT] WS closed: {e.code}")
         except Exception as e: log.error(f"[BOT] WS error: {e}")
         finally:
-            wd_task.cancel()
+            wd_task.cancel(); ka_task.cancel()
             try: await wd_task
+            except Exception: pass
+            try: await ka_task
             except Exception: pass
             self.save_stats()
             if self.ws and self.ws.close_code is None:
@@ -2215,6 +2251,7 @@ class CaroBot:
                 break
 
             await self.run_ws()
+            await asyncio.sleep(3)  # tránh reconnect dồn dập khi server đóng liên tục
 
             if not (self.in_table or self.is_playing):
                 self.table_id = None
