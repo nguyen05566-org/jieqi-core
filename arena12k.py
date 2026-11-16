@@ -45,6 +45,16 @@ for pkg in REQUIRED:
 
 import websockets, requests
 
+# ======================== OPTIONAL PLAYWRIGHT STEALTH ========================
+USE_PLAYWRIGHT = os.environ.get("CARO_USE_PLAYWRIGHT", "0") == "1"
+if USE_PLAYWRIGHT:
+    try:
+        from playwright.async_api import async_playwright
+        from playwright_stealth import Stealth
+    except Exception as _e:
+        print(f"[SETUP] Playwright/stealth unavailable: {_e}")
+        USE_PLAYWRIGHT = False
+
 # ======================== SAFE IDENTITY CONFIG ========================
 VN_TEN_DAU = [
     "Tuấn", "Minh", "Đức", "Hoàng", "Huy", "Hùng", "Dũng", "Cường", "Long", "Nam",
@@ -1157,9 +1167,99 @@ class Board:
         return self.get_empty_near_center()
 
 # ======================== BOT ========================
+HOOK_JS = r"""() => {
+  window.__pwRx = window.__pwRx || [];
+  const c = window.connection;
+  if (!c || !c.ws) return false;
+  const ws = c.ws;
+  try { ws.binaryType = 'arraybuffer'; } catch(e) {}
+  if (!window.__pwHooked) {
+    ws.addEventListener('message', function(ev) {
+      try {
+        const d = ev.data;
+        let u8 = null;
+        if (d instanceof ArrayBuffer) u8 = new Uint8Array(d);
+        else if (d && d.buffer instanceof ArrayBuffer) u8 = new Uint8Array(d.buffer);
+        if (u8) {
+          let s = '';
+          for (let i = 0; i < u8.length; i++) s += u8[i].toString(16).padStart(2, '0');
+          window.__pwRx.push(s);
+          if (window.__pwRx.length > 2000) window.__pwRx.shift();
+        }
+      } catch(e) {}
+    });
+    window.__pwHooked = true;
+  }
+  return true;
+}"""
+
+SEND_JS = r"""(hex) => {
+  const c = window.connection;
+  if (!c || !c.ws || c.ws.readyState !== 1) return false;
+  const u8 = new Uint8Array(hex.match(/../g).map(h => parseInt(h, 16)));
+  c.ws.send(u8.buffer);
+  return true;
+}"""
+
+WS_READY_JS = "() => !!(window.connection && connection.ws && connection.ws.readyState === 1)"
+
+UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/139.0 Safari/537.36")
+
+class PageWS:
+    def __init__(self, frame):
+        self.frame = frame
+        self.queue = asyncio.Queue()
+        self.close_code = None
+        self._task = None
+
+    async def start(self):
+        await self.frame.evaluate(HOOK_JS)
+        self._task = asyncio.create_task(self._pump())
+
+    async def _pump(self):
+        try:
+            while self.close_code is None:
+                try:
+                    hexes = await self.frame.evaluate(
+                        "() => { const a = window.__pwRx || []; window.__pwRx = []; return a; }")
+                except Exception:
+                    self.close_code = 1006
+                    break
+                for h in hexes:
+                    await self.queue.put(bytes.fromhex(h))
+                await asyncio.sleep(0.03)
+        finally:
+            await self.queue.put(None)
+
+    async def send(self, data: bytes):
+        ok = await self.frame.evaluate(SEND_JS, data.hex())
+        if not ok:
+            raise ConnectionError("page ws not ready")
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        item = await self.queue.get()
+        if item is None:
+            raise StopAsyncIteration
+        return item
+
+    async def close(self):
+        self.close_code = 1000
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except BaseException:
+                pass
+
+
 class CaroBot:
     def __init__(self):
         self.ws = None; self.board = Board(width=15, height=19)
+        self._pw = None; self._browser = None; self._ctx = None; self._page = None
         self.slot = -1; self.my_symbol = CROSS; self.opponent_symbol = CIRCLE
         self.is_playing = False; self.in_table = False; self.ready = False
         self.players = {}; self.nickname = ""; self.token = 0; self.cookie = ""
@@ -2162,6 +2262,45 @@ class CaroBot:
             return False
 
     async def connect_ws(self) -> bool:
+        if USE_PLAYWRIGHT:
+            try:
+                self._pw = await async_playwright().start()
+                self._stealth = Stealth()
+                self._stealth.hook_playwright_context(self._pw)
+                self._browser = await self._pw.chromium.launch(headless=True, args=[
+                    "--no-sandbox", "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                ])
+                self._ctx = await self._browser.new_context(
+                    user_agent=UA, viewport={"width": 1280, "height": 720}, locale="vi-VN")
+                cookies = []
+                for part in (self.cookie or "").split("; "):
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        cookies.append({"name": k, "value": v, "domain": ".gamevh.net", "path": "/"})
+                if cookies:
+                    await self._ctx.add_cookies(cookies)
+                self._page = await self._ctx.new_page()
+                await self._page.goto(GAME_URL, wait_until="domcontentloaded", timeout=60000)
+                for _ in range(120):
+                    try:
+                        if await self._page.evaluate(WS_READY_JS):
+                            break
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.5)
+                else:
+                    raise RuntimeError("page websocket not ready")
+                ws = PageWS(self._page.main_frame)
+                await ws.start()
+                self.ws = ws
+                log.info("[PW] game page bridged (connection.ws)")
+                return True
+            except Exception as e:
+                log.error(f"[PW] connect error: {e}", exc_info=True)
+                return False
         try:
             _kw = {}
             if PROXY:
@@ -2206,7 +2345,17 @@ class CaroBot:
             try: await ka_task
             except Exception: pass
             self.save_stats()
-            if self.ws and self.ws.close_code is None:
+            if USE_PLAYWRIGHT:
+                try:
+                    if self._ctx: await self._ctx.close()
+                except Exception: pass
+                try:
+                    if self._browser: await self._browser.close()
+                except Exception: pass
+                try:
+                    if self._pw: await self._pw.stop()
+                except Exception: pass
+            if self.ws and getattr(self.ws, "close_code", None) is None:
                 try: await self.ws.close()
                 except Exception: pass
 
