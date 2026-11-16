@@ -909,8 +909,8 @@ class AlphaGomokuEngine:
 WS_URL = "wss://gamevh.net/ws/gameServer"
 GAME_URL = "https://gamevh.net/play/caro/0"
 # === CẤU HÌNH TRỰC TIẾP - KHÔNG CẦN SECRETS ===
-CARO_USER_DIRECT = "yyyyyyyyyy"
-CARO_PASSWD_DIRECT = "nhat123456"
+CARO_USER_DIRECT = "haidan_1608"
+CARO_PASSWD_DIRECT = "abc123"
 def _clean_env(val: Optional[str], default: str) -> str:
     if val and str(val).strip(): return str(val).strip()
     return default
