@@ -909,7 +909,7 @@ class AlphaGomokuEngine:
 WS_URL = "wss://gamevh.net/ws/gameServer"
 GAME_URL = "https://gamevh.net/play/caro/0"
 # === CẤU HÌNH TRỰC TIẾP - KHÔNG CẦN SECRETS ===
-CARO_USER_DIRECT = "haidan_1608"
+CARO_USER_DIRECT = "vanman374"
 CARO_PASSWD_DIRECT = "abc123"
 def _clean_env(val: Optional[str], default: str) -> str:
     if val and str(val).strip(): return str(val).strip()
@@ -943,7 +943,7 @@ else:
     try:
         BOT_BET_XU = int((input("Nhap muc cuoc (xu) [40000]: ").strip() or "40000"))
     except Exception:
-        BOT_BET_XU = 4000
+        BOT_BET_XU = 400
 BOT_MATCH_DURATION = '1800'
 BOT_TURN_DURATION = '60'
 # accDuration: countdown (giây) khi đối thủ vào bàn. Server mặc định 10s;
