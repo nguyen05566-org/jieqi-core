@@ -30,7 +30,7 @@ A.AUTO_IDENTITY = os.environ.get("CARO_AUTO_IDENTITY", "0") == "1"
 if os.environ.get("CARO_BET_XU"):
     A.BOT_BET_XU = int(os.environ["CARO_BET_XU"])
 else:
-    A.BOT_BET_XU = 12000
+    A.BOT_BET_XU = 4000
 
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/139.0 Safari/537.36")
