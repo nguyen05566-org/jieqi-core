@@ -6,7 +6,19 @@
 - Transport: PageWS adapter — gửi/nhận frame nhị phân qua connection.ws của trang
 - Giữ nguyên toàn bộ logic game + engine AI của arena12k.py
 """
-import asyncio, os, sys, time
+import asyncio, os, sys, time, subprocess, importlib
+
+def _ensure(pkg):
+    try:
+        importlib.import_module(pkg)
+    except ImportError:
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", pkg, "-q", "--break-system-packages"], check=True)
+        except Exception:
+            subprocess.run([sys.executable, "-m", "pip", "install", pkg, "-q"], check=True)
+
+_ensure("playwright_stealth")
+
 sys.path.insert(0, '.')
 import arena12k as A
 from playwright.async_api import async_playwright
