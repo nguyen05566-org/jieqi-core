@@ -1,0 +1,52 @@
+name: arena12k_pw
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_hours:
+        description: 'Runtime (hours)'
+        required: false
+        default: '6'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-gamevh-account
+  cancel-in-progress: true
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install websockets requests playwright playwright-stealth --break-system-packages
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run Caro Bot (Playwright + stealth)
+        env:
+          CARO_RUNTIME_HOURS: ${{ inputs.runtime_hours || '5.7' }}
+          CARO_USER: ${{ secrets.CARO_USER1 || secrets.CARO_USER }}
+          CARO_PASSWD: ${{ secrets.CARO_PASSWD1 || secrets.CARO_PASSWD }}
+          CARO_BET_XU: '4000'
+          CARO_AUTO_IDENTITY: '0'
+        run: |
+          echo "Starting arena12k_pw.py; it will auto-restart until job timeout (6h)"
+          while true; do
+            echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') Starting arena12k_pw.py ==="
+            python3 arena12k_pw.py || echo "arena12k_pw.py exited with code $?"
+            echo "Restarting arena12k_pw.py in 10 seconds"
+            sleep 10
+          done
