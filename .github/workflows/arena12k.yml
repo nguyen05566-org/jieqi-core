@@ -8,14 +8,6 @@ on:
         required: false
         default: '6'
         type: string
-      use_playwright:
-        description: 'Use Playwright stealth transport'
-        required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
 
 permissions:
   contents: read
@@ -38,11 +30,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install websockets requests playwright playwright-stealth --break-system-packages
-
-      - name: Install Playwright browsers
-        if: ${{ inputs.use_playwright == 'true' }}
-        run: playwright install chromium --with-deps
+        run: pip install websockets requests --break-system-packages
 
       - name: Run Caro Bot
         env:
@@ -51,17 +39,11 @@ jobs:
           CARO_PASSWD: ${{ secrets.CARO_PASSWD }}
           CARO_BET_XU: '400'
           CARO_AUTO_IDENTITY: '0'
-          CARO_USE_PW: ${{ inputs.use_playwright }}
         run: |
-          echo "Starting bot (use_playwright=$CARO_USE_PW)"
-          if [ "$CARO_USE_PW" = "true" ]; then
-            SCRIPT=arena12k_pw.py
-          else
-            SCRIPT=arena12k.py
-          fi
+          echo "Starting arena12k.py"
           while true; do
-            echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') Starting $SCRIPT ==="
-            python3 "$SCRIPT" || echo "$SCRIPT exited with code $?"
-            echo "Restarting $SCRIPT in 10 seconds"
+            echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') Starting arena12k.py ==="
+            python3 arena12k.py || echo "arena12k.py exited with code $?"
+            echo "Restarting arena12k.py in 10 seconds"
             sleep 10
           done
