@@ -909,7 +909,7 @@ class AlphaGomokuEngine:
 WS_URL = "wss://gamevh.net/ws/gameServer"
 GAME_URL = "https://gamevh.net/play/caro/0"
 # === CẤU HÌNH TRỰC TIẾP - KHÔNG CẦN SECRETS ===
-CARO_USER_DIRECT = "thanhc3558"
+CARO_USER_DIRECT = "yyyyyyyyyy"
 CARO_PASSWD_DIRECT = "nhat123456"
 def _clean_env(val: Optional[str], default: str) -> str:
     if val and str(val).strip(): return str(val).strip()
@@ -934,7 +934,7 @@ PROXY = os.environ.get("CARO_PROXY", "").strip()  # vd: socks5://ip:port
 HTTP_TIMEOUT = float(os.environ.get("CARO_HTTP_TIMEOUT", "30"))
 RUNTIME = int(os.environ.get("CARO_RUNTIME_SECONDS") or
               float(os.environ.get("CARO_RUNTIME_HOURS", "5.9")) * 3600)
-AUTO_IDENTITY = os.environ.get("CARO_AUTO_IDENTITY", "1") == "1"
+AUTO_IDENTITY = os.environ.get("CARO_AUTO_IDENTITY", "0") == "1"
 IDENTITY_TEST_ONLY = os.environ.get("CARO_IDENTITY_TEST_ONLY", "0") == "1"
 _env_bet = os.environ.get("CARO_BET_XU")
 if _env_bet:
@@ -943,7 +943,7 @@ else:
     try:
         BOT_BET_XU = int((input("Nhap muc cuoc (xu) [40000]: ").strip() or "40000"))
     except Exception:
-        BOT_BET_XU = 200
+        BOT_BET_XU = 4000
 BOT_MATCH_DURATION = '1800'
 BOT_TURN_DURATION = '60'
 # accDuration: countdown (giây) khi đối thủ vào bàn. Server mặc định 10s;
