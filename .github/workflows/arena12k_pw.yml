@@ -38,7 +38,7 @@ jobs:
       - name: Run Caro Bot (Playwright + stealth)
         env:
           CARO_RUNTIME_HOURS: ${{ inputs.runtime_hours || '5.7' }}
-          CARO_USER: ${{ secrets.CARO_USER1 || secrets.CARO_USER }}
+          CARO_USER: vanman374
           CARO_PASSWD: ${{ secrets.CARO_PASSWD1 || secrets.CARO_PASSWD }}
           CARO_BET_XU: '10000'
           CARO_AUTO_IDENTITY: '0'
