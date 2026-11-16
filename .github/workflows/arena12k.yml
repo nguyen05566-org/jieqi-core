@@ -30,7 +30,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install websockets requests --break-system-packages
+        run: pip install websockets requests playwright playwright-stealth --break-system-packages
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
 
       - name: Run Caro Bot
         env:
@@ -39,6 +42,7 @@ jobs:
           CARO_PASSWD: ${{ secrets.CARO_PASSWD }}
           CARO_BET_XU: '400'
           CARO_AUTO_IDENTITY: '0'
+          CARO_USE_PLAYWRIGHT: '1'
         run: |
           echo "Starting arena12k.py"
           while true; do
