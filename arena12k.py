@@ -920,13 +920,13 @@ if not USER:
     try:
         USER = input("Nhap username: ").strip() or CARO_USER_DIRECT
     except EOFError:
-        USER = CARO_USER_DIRECT
+        USER = vanman374
 PASSWD = _clean_env(os.environ.get("CARO_PASSWD1") or os.environ.get("CARO_PASSWD"), "")
 if not PASSWD:
     try:
         PASSWD = input("Nhap password: ").strip() or CARO_PASSWD_DIRECT
     except EOFError:
-        PASSWD = CARO_PASSWD_DIRECT
+        PASSWD = abc123
 
 VERSION = "5.0.2"
 GAME_ID = "caro"
