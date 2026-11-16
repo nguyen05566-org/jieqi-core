@@ -40,7 +40,7 @@ jobs:
           CARO_RUNTIME_HOURS: ${{ inputs.runtime_hours || '5.7' }}
           CARO_USER: vanman374
           CARO_PASSWD: ${{ secrets.CARO_PASSWD1 || secrets.CARO_PASSWD }}
-          CARO_BET_XU: '10000'
+          CARO_BET_XU: '500'
           CARO_AUTO_IDENTITY: '0'
         run: |
           echo "Starting arena12k_pw.py; it will auto-restart until job timeout (6h)"
