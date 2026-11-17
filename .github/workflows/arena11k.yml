@@ -32,18 +32,22 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install websockets requests --break-system-packages
+        run: pip install websockets requests playwright playwright-stealth --break-system-packages
 
-      - name: Run Caro Bot (Linux native engine, no wine)
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run Caro Bot (Playwright stealth, Linux native engine)
         env:
           CARO_RUNTIME_HOURS: ${{ inputs.runtime_hours || '5.7' }}
           CARO_USER1: ${{ secrets.CARO_USER1 || secrets.CARO_USER }}
           CARO_PASSWD1: ${{ secrets.CARO_PASSWD1 || secrets.CARO_PASSWD }}
+          CARO_BET_XU: '1000'
         run: |
-          echo "Starting arena11k.py; it will auto-restart until job timeout (6h)"
+          echo "Starting arena11k_pw.py; it will auto-restart until job timeout (6h)"
           while true; do
-            echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') Starting arena11k.py ==="
-            python3 arena11k.py || echo "arena11k.py exited with code $?"
-            echo "Restarting arena11k.py in 10 seconds"
+            echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') Starting arena11k_pw.py ==="
+            python3 arena11k_pw.py || echo "arena11k_pw.py exited with code $?"
+            echo "Restarting arena11k_pw.py in 10 seconds"
             sleep 10
           done
