@@ -522,7 +522,7 @@ else:
     try:
         BOT_BET_XU = int((input("Nhap muc cuoc (xu) [40000]: ").strip() or "40000"))
     except Exception:
-        BOT_BET_XU = 500
+        BOT_BET_XU = 200
 BOT_MATCH_DURATION = '1800'
 BOT_TURN_DURATION = '60'
 # accDuration: countdown (giây) khi đối thủ vào bàn. Server mặc định 10s;
