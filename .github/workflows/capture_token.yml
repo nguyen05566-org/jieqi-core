@@ -13,13 +13,12 @@ permissions:
   contents: write
   actions: write
 
-concurrency:
-  group: capture-token-${{ matrix.cookie }}
-
 jobs:
   capture:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    concurrency:
+      group: capture-token-${{ matrix.cookie }}
     strategy:
       fail-fast: false
       matrix:
